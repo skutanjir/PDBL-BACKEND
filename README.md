@@ -1,21 +1,22 @@
-# Todo API Backend
+# Todo and Team Collaboration API Backend
 
-A RESTful API backend service for managing Todo tasks, built with Laravel. This service supports both authenticated users and anonymous guest interactions with automatic data synchronization upon registration or login.
+A professional RESTful API backend built with Laravel for managing individual tasks and collaborative team environments. This service supports anonymous guest access with device-based tracking and seamless data synchronization upon user registration.
 
-## Features
+## Core Features
 
-- **Guest Task Management**: Users can create, update, and manage tasks anonymously using a unique device identifier.
-- **User Authentication**: Secure registration, login, and token-based authentication using Laravel Sanctum.
-- **Data Synchronization**: Automatic migration of guest tasks to a persistent user account upon registration or login.
-- **Task Attributes**: Support for task deadlines, priority levels (high, medium, low), and completion status tracking.
-- **Stateless Architecture**: Fully stateless API endpoints optimized for performance.
+- **Anonymous Guest Support**: Manage tasks without an account using unique device identifiers (X-Device-ID).
+- **Authentication System**: Secure registration and login using Laravel Sanctum (Token-based).
+- **Data Synchronization**: Automatically transfer guest-created tasks to a permanent account upon signup.
+- **Collaborative Teams**: Create teams and invite registered members via email for shared task management.
+- **Advanced Task Attributes**: Support for task deadlines, priority levels (High, Medium, Low), and completion status.
+- **Stateless Architecture**: High-performance API design optimized for low latency.
 
 ## Requirements
 
 - PHP 8.2 or higher
 - Composer
 - PostgreSQL
-- Nginx or Apache (for production deployment)
+- Nginx / Apache / Artisan Serve
 
 ## Installation
 
@@ -30,65 +31,96 @@ A RESTful API backend service for managing Todo tasks, built with Laravel. This 
    composer install
    ```
 
-3. Configure environment variables:
+3. Configure environment:
    ```bash
    cp .env.example .env
-   # Update database credentials in the .env file
+   # Set DB_CONNECTION=pgsql and provide database credentials
    ```
 
-4. Generate application key:
+4. Initialize application:
    ```bash
    php artisan key:generate
-   ```
-
-5. Run database migrations:
-   ```bash
    php artisan migrate
    ```
 
-6. Start the development server:
-   ```bash
-   php artisan serve
-   ```
+## API Documentation
 
-## API Endpoints
+### 1. Authentication
 
-### Authentication
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/register` | Create account and sync guest data. |
+| POST | `/api/login` | Authenticate user and receive Bearer Token. |
+| GET | `/api/user` | Retrieve authenticated user profile. |
+| POST | `/api/logout` | Revoke current access token. |
 
-- `POST /api/register`: Register a new user account.
-- `POST /api/login`: Authenticate and receive a Bearer token.
-- `POST /api/logout`: Revoke the current authentication token (Requires Bearer Token).
-- `GET /api/user`: Retrieve the authenticated user profile (Requires Bearer Token).
-
-### Todo Tasks
-
-Tasks can be managed using either a `Bearer Token` (for authenticated users) or an `X-Device-ID` header (for guest users).
-
-- `GET /api/todos`: Retrieve all tasks associated with the user or device.
-- `POST /api/todos`: Create a new task.
-- `GET /api/todos/{id}`: Retrieve a specific task.
-- `PUT /api/todos/{id}`: Update an existing task.
-- `DELETE /api/todos/{id}`: Delete a task.
-
-#### Guest Operations
-
-To interact with tasks without an account, include a unique identifier in the request headers:
-```http
-X-Device-ID: unique-device-uuid-string
-```
-
-#### Task Synchronization
-
-To migrate tasks from a guest session to a registered account, include the `device_id` parameter in the payload during the `/api/register` or `/api/login` requests.
-
+#### Registration/Login Payload with Sync:
 ```json
 {
   "email": "user@example.com",
-  "password": "securepassword",
-  "device_id": "unique-device-uuid-string"
+  "password": "password",
+  "device_id": "optional-uuid-string-to-sync-guest-data"
 }
 ```
 
+---
+
+### 2. Task Management (Todos)
+
+Tasks can be accessed via `Authorization: Bearer <token>` or `X-Device-ID: <uuid>`.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| GET | `/api/todos` | Optional | List all personal and team tasks. |
+| POST | `/api/todos` | Optional | Create a new task. |
+| GET | `/api/todos/{id}` | Optional | Retrieve task details. |
+| PUT | `/api/todos/{id}` | Optional | Update task status or attributes. |
+| DELETE | `/api/todos/{id}` | Optional | Remove a task. |
+
+#### Create Task Payload:
+```json
+{
+  "judul": "Task Title",
+  "deskripsi": "Task Description",
+  "deadline": "2026-12-31 23:59:59",
+  "priority": "high",
+  "team_id": null
+}
+```
+
+---
+
+### 3. Team Collaboration
+
+Requires `Authorization: Bearer <token>`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/teams` | List teams owned or joined. |
+| POST | `/api/teams` | Create a new collaboration team. |
+| GET | `/api/teams/{id}` | View team members and team tasks. |
+| POST | `/api/teams/{id}/invite` | Invite user to team by registered email. |
+| DELETE | `/api/teams/{id}` | Delete team (Owner only). |
+
+#### Invite Member Payload:
+```json
+{
+  "email": "registered-user@email.com"
+}
+```
+
+## Collaborative Logic
+
+1. **Personal Tasks**: Created with `team_id: null`. Only visible to the owner.
+2. **Team Tasks**: Created with a valid `team_id`. Visible to all members of that team.
+3. **Guest Tasks**: Created without a token but with an `X-Device-ID` header. These remain private to the device until synced to an account.
+
+## Security
+
+- User passwords are encrypted using Bcrypt (12 rounds).
+- API routes use Sanctum middleware for token validation.
+- Cross-origin isolation handled via CORS configuration.
+
 ## License
 
-This project is proprietary software. All rights reserved.
+Proprietary Software. All rights reserved.
