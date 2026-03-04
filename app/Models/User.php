@@ -52,4 +52,13 @@ class User extends Authenticatable
     {
         return $this->hasMany(Todo::class);
     }
+
+    public function teams()
+    {
+        return $this->belongsToMany(Team::class);
+    }
+
+    public function ownedTeams()
+    {
+        return $this->hasMany(Team::class, 'created_by');
 }

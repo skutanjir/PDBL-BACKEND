@@ -18,6 +18,7 @@ class Todo extends Model
         'priority',
         'device_id',
         'user_id',
+        'team_id',
     ];
 
     protected function casts(): array
@@ -32,4 +33,8 @@ class Todo extends Model
     {
         return $this->belongsTo(User::class);
     }
+
+    public function team(): BelongsTo
+    {
+        return $this->belongsTo(Team::class);
 }

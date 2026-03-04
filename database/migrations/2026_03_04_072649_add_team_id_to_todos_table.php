@@ -12,8 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('todos', function (Blueprint $table) {
-            $table->string('device_id')->nullable()->after('id')->index();
-            $table->unsignedBigInteger('user_id')->nullable()->change();
+            $table->foreignId('team_id')->nullable()->after('user_id')->constrained()->onDelete('cascade');
         });
     }
 
@@ -23,8 +22,7 @@ return new class extends Migration
     public function down(): void
     {
         Schema::table('todos', function (Blueprint $table) {
-            $table->dropColumn('device_id');
-            $table->unsignedBigInteger('user_id')->nullable(false)->change();
+            $table->dropConstrainedForeignId('team_id');
         });
     }
 };
