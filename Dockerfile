@@ -6,10 +6,8 @@ RUN apt-get update && apt-get install -y \
 
 RUN docker-php-ext-install pdo_mysql pdo_pgsql pgsql mbstring exif pcntl bcmath gd zip
 
-# Fix Apache MPM conflict
-RUN a2dismod mpm_event || true \
- && a2dismod mpm_worker || true \
- && a2dismod mpm_prefork || true \
+# Fix Apache MPM conflict and enable rewrite
+RUN a2dismod mpm_event mpm_worker || true \
  && a2enmod mpm_prefork \
  && a2enmod rewrite
 
@@ -25,4 +23,10 @@ RUN chown -R www-data:www-data storage bootstrap/cache
 
 RUN sed -i 's|/var/www/html|/var/www/html/public|g' /etc/apache2/sites-available/000-default.conf
 
+# Use a custom entrypoint script
+COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
 EXPOSE 80
+
+ENTRYPOINT ["docker-entrypoint.sh"]
