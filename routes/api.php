@@ -20,5 +20,5 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Teams management
     Route::apiResource('teams', \App\Http\Controllers\TeamController::class);
-    Route::post('teams/{team}/invite', [\App\Http\Controllers\TeamController.class, 'invite']);
+    Route::post('teams/{team}/invite', [\App\Http\Controllers\TeamController::class, 'invite']);
 });
