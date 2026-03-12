@@ -19,13 +19,15 @@ class Todo extends Model
         'device_id',
         'user_id',
         'team_id',
-    ];
+        'team_id',
+        'assigned_emails',
 
     protected function casts(): array
     {
         return [
             'is_completed' => 'boolean',
             'deadline' => 'datetime',
+            'assigned_emails' => 'array',
         ];
     }
 

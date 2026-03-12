@@ -37,6 +37,7 @@ class TodoController extends Controller
             'deadline' => 'nullable|date',
             'priority' => 'nullable|in:high,medium,low',
             'team_id' => 'nullable|exists:teams,id',
+            'assigned_emails' => 'nullable|array',
         ]);
 
         $user = $request->user('sanctum');
@@ -55,6 +56,7 @@ class TodoController extends Controller
             'user_id' => $user ? $user->id : null,
             'device_id' => $user ? null : $deviceId,
             'team_id' => $request->team_id,
+            'assigned_emails' => $request->assigned_emails,
         ]);
 
         return response()->json([
@@ -115,9 +117,10 @@ class TodoController extends Controller
             'deadline' => 'nullable|date',
             'priority' => 'nullable|in:high,medium,low',
             'team_id' => 'sometimes|nullable|exists:teams,id',
+            'assigned_emails' => 'nullable|array',
         ]);
 
-        $todo->update($request->only(['judul', 'deskripsi', 'is_completed', 'deadline', 'priority', 'team_id']));
+        $todo->update($request->only(['judul', 'deskripsi', 'is_completed', 'deadline', 'priority', 'team_id', 'assigned_emails']));
 
         return response()->json([
             'message' => 'Todo berhasil diupdate',
