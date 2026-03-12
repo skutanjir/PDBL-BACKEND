@@ -4,6 +4,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\TodoController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\TeamController;
+use App\Http\Controllers\NotificationController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -33,4 +34,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('profile/password', [ProfileController::class, 'updatePassword']);
     Route::post('profile/email', [ProfileController::class, 'updateEmail']);
     Route::post('profile/update', [ProfileController::class, 'updateProfile']);
+
+    // Notifications
+    Route::get('notifications', [NotificationController::class, 'index']);
+    Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
+    Route::post('notifications/{notification}/read', [NotificationController::class, 'markAsRead']);
+    Route::delete('notifications/{notification}', [NotificationController::class, 'destroy']);
 });

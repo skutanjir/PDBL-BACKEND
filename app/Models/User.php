@@ -61,5 +61,10 @@ class User extends Authenticatable
     public function ownedTeams()
     {
         return $this->hasMany(Team::class, 'created_by');
-}
+    }
+
+    public function notifications()
+    {
+        return $this->hasMany(Notification::class);
+    }
 }

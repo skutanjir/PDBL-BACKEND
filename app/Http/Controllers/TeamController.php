@@ -3,6 +3,9 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
+use App\Models\Notification;
+use App\Models\Team;
+use App\Models\User;
 
 class TeamController extends Controller
 {
@@ -83,6 +86,14 @@ class TeamController extends Controller
 
         // Attach with pending status
         $team->members()->attach($userToInvite->id, ['status' => 'pending']);
+
+        // Notification
+        Notification::create([
+            'user_id' => $userToInvite->id,
+            'type' => 'invite',
+            'message' => "Anda telah diundang untuk bergabung dengan tim {$team->name}.",
+            'team_id' => $team->id,
+        ]);
 
         return response()->json([
             'message' => 'User invited to team successfully',
@@ -191,6 +202,14 @@ class TeamController extends Controller
 
         $team->members()->detach($user->id);
 
+        // Notification
+        Notification::create([
+            'user_id' => $user->id,
+            'type' => 'kick',
+            'message' => "Anda telah dikeluarkan dari tim {$team->name}.",
+            'team_id' => $team->id,
+        ]);
+
         return response()->json(['message' => 'Member removed successfully']);
     }
 
@@ -205,6 +224,14 @@ class TeamController extends Controller
         }
 
         $team->members()->updateExistingPivot($user->id, ['status' => 'banned']);
+
+        // Notification
+        Notification::create([
+            'user_id' => $user->id,
+            'type' => 'ban',
+            'message' => "Anda telah dilarang (banned) dari tim {$team->name}.",
+            'team_id' => $team->id,
+        ]);
 
         return response()->json(['message' => 'Member banned successfully']);
     }
