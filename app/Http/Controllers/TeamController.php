@@ -147,12 +147,35 @@ class TeamController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
+        $allTeamTasks = $team->todos()->get();
         $members = $team->members()
             ->wherePivot('status', 'accepted')
             ->get()
-            ->map(function($user) use ($team) {
-                $totalTasks = $team->todos()->where('user_id', $user->id)->count();
-                $completedTasks = $team->todos()->where('user_id', $user->id)->where('is_completed', true)->count();
+            ->map(function($user) use ($team, $allTeamTasks) {
+                $memberEmail = strtolower(trim($user->email));
+                
+                // Get tasks assigned to this member (by user_id OR by assigned_emails)
+                $memberTasks = $allTeamTasks->filter(function($todo) use ($user, $memberEmail) {
+                    // Task assigned by user_id
+                    if ($todo->user_id === $user->id) return true;
+                    // Task assigned by email in assigned_emails
+                    $assignedEmails = collect($todo->assigned_emails ?? [])->map(fn($e) => strtolower(trim($e)));
+                    return $assignedEmails->contains($memberEmail);
+                });
+                
+                $totalTasks = $memberTasks->count();
+                $completedTasks = $memberTasks->filter(function($todo) use ($memberEmail) {
+                    $completedBy = collect($todo->completed_by ?? []);
+                    $assignedEmails = collect($todo->assigned_emails ?? []);
+                    
+                    // If task uses completed_by system (has assigned_emails)
+                    if ($assignedEmails->isNotEmpty()) {
+                        return $completedBy->contains(fn($e) => strtolower(trim((string)$e)) === $memberEmail);
+                    }
+                    // Fallback: legacy task with is_completed
+                    return $todo->is_completed;
+                })->count();
+                
                 $user->progress = $totalTasks > 0 ? round(($completedTasks / $totalTasks) * 100) : 0;
                 $user->role = ($user->id === $team->created_by) ? 'Ketua Team' : 'Member';
                 return $user;
