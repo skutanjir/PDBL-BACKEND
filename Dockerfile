@@ -6,9 +6,11 @@ RUN apt-get update && apt-get install -y \
 
 RUN docker-php-ext-install pdo_mysql pdo_pgsql pgsql mbstring exif pcntl bcmath gd zip
 
-# Fix MPM conflict - disable ALL MPMs first, then enable only prefork
-RUN a2dismod mpm_event mpm_worker mpm_prefork 2>/dev/null || true \
- && a2enmod mpm_prefork \
+# Fix MPM conflict - manually remove ALL mpm symlinks then enable only prefork
+RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
+          /etc/apache2/mods-enabled/mpm_*.conf \
+ && ln -s /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load \
+ && ln -s /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf \
  && a2enmod rewrite
 
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer

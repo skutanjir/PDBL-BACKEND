@@ -1,6 +1,11 @@
 #!/bin/sh
 set -e
 
+# Force fix MPM at runtime
+rm -f /etc/apache2/mods-enabled/mpm_*.load /etc/apache2/mods-enabled/mpm_*.conf
+ln -sf /etc/apache2/mods-available/mpm_prefork.load /etc/apache2/mods-enabled/mpm_prefork.load
+ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mpm_prefork.conf
+
 # Run migrations if database is ready
 php artisan migrate --force --no-interaction
 
@@ -15,5 +20,4 @@ if [ -n "$PORT" ]; then
     sed -i "s/<VirtualHost \*:80>/<VirtualHost \*:$PORT>/g" /etc/apache2/sites-available/000-default.conf
 fi
 
-# Start Apache in the foreground
 exec apache2-foreground
