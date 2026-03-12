@@ -9,6 +9,9 @@ ln -sf /etc/apache2/mods-available/mpm_prefork.conf /etc/apache2/mods-enabled/mp
 # Run migrations if database is ready
 php artisan migrate --force --no-interaction
 
+# Create storage link
+php artisan storage:link
+
 # Optimize Laravel
 php artisan config:cache
 php artisan route:cache
