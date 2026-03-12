@@ -2,11 +2,14 @@ FROM php:8.2-apache
 
 RUN apt-get update && apt-get install -y \
     git curl zip unzip \
-    libpng-dev libonig-dev libxml2-dev libzip-dev libpq-dev
+    libpng-dev libonig-dev libxml2-dev libzip-dev libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
 
 RUN docker-php-ext-install pdo_mysql pdo_pgsql pgsql mbstring exif pcntl bcmath gd zip
 
-RUN a2dismod mpm_event mpm_worker || true \
+# Fix MPM conflict - disable ALL mpms first, then enable only prefork
+RUN find /etc/apache2/mods-enabled/ -name 'mpm_*.load' -delete \
+ && find /etc/apache2/mods-enabled/ -name 'mpm_*.conf' -delete \
  && a2enmod mpm_prefork \
  && a2enmod rewrite
 
@@ -20,8 +23,8 @@ RUN composer install --no-dev --optimize-autoloader
 
 RUN chown -R www-data:www-data storage bootstrap/cache
 
-# Apache config dengan AllowOverride All
-RUN echo '<VirtualHost *:${PORT:-80}>\n\
+# Apache virtual host config
+RUN echo '<VirtualHost *:80>\n\
     DocumentRoot /var/www/html/public\n\
     <Directory /var/www/html/public>\n\
         AllowOverride All\n\
