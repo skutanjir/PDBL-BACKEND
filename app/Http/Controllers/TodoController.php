@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Todo;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class TodoController extends Controller
 {
@@ -11,7 +12,7 @@ class TodoController extends Controller
     {
         $user = $request->user('sanctum');
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
-        \Log::info('Todo index request', ['user_id' => $user?->id, 'device_id' => $deviceId]);
+        Log::info('Todo index request', ['user_id' => $user?->id, 'device_id' => $deviceId]);
 
         if ($user) {
             $todos = Todo::where(function($query) use ($user) {
@@ -42,7 +43,7 @@ class TodoController extends Controller
 
         $user = $request->user('sanctum');
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
-        \Log::info('Todo store request', ['user_id' => $user?->id, 'device_id' => $deviceId, 'judul' => $request->judul]);
+        Log::info('Todo store request', ['user_id' => $user?->id, 'device_id' => $deviceId, 'judul' => $request->judul]);
 
         if (!$user && !$deviceId) {
             return response()->json(['message' => 'Unauthorized or Device ID required'], 401);
@@ -152,6 +153,58 @@ class TodoController extends Controller
 
         return response()->json([
             'message' => 'Todo berhasil dihapus',
+        ]);
+    }
+
+    /**
+     * Toggle current user's completion status on a team task.
+     * Each assigned member must check individually.
+     * Task is_completed = true only when ALL assigned members have checked.
+     */
+    public function toggleMember(Request $request, Todo $todo)
+    {
+        $user = $request->user('sanctum');
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $email = strtolower(trim($user->email));
+        $assignedEmails = collect($todo->assigned_emails ?? [])->map(fn($e) => strtolower(trim($e)));
+
+        // Check if user is owner or assigned
+        $isOwner = $todo->team && $todo->team->created_by === $user->id;
+        $isAssigned = $assignedEmails->contains($email);
+
+        if (!$isOwner && !$isAssigned) {
+            return response()->json(['message' => 'Only the owner or assigned member can toggle this task'], 403);
+        }
+
+        $completedBy = collect($todo->completed_by ?? []);
+
+        if ($completedBy->contains($email)) {
+            // Uncheck: remove from completed_by
+            $completedBy = $completedBy->reject(fn($e) => strtolower(trim((string)$e)) === $email)->values();
+        } else {
+            // Check: add to completed_by
+            $completedBy->push($email);
+        }
+
+        $completedByArray = $completedBy->values()->all();
+        $totalAssigned = max($assignedEmails->count(), 1);
+        $totalCompleted = $completedBy->count();
+        $isFullyCompleted = $totalCompleted >= $totalAssigned;
+
+        $todo->update([
+            'completed_by' => $completedByArray,
+            'is_completed' => $isFullyCompleted,
+        ]);
+
+        return response()->json([
+            'message' => 'Task status updated',
+            'todo' => $todo->fresh(),
+            'completed_count' => $totalCompleted,
+            'total_assigned' => $totalAssigned,
+            'is_fully_completed' => $isFullyCompleted,
         ]);
     }
 }

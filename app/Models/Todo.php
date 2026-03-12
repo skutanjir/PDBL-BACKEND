@@ -20,6 +20,7 @@ class Todo extends Model
         'user_id',
         'team_id',
         'assigned_emails',
+        'completed_by',
     ];
     protected function casts(): array
     {
@@ -27,6 +28,7 @@ class Todo extends Model
             'is_completed' => 'boolean',
             'deadline' => 'datetime',
             'assigned_emails' => 'array',
+            'completed_by' => 'array',
         ];
     }
 

@@ -29,6 +29,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::delete('teams/{team}/members/{user}', [TeamController::class, 'removeMember']);
     Route::post('teams/{team}/members/{user}/ban', [TeamController::class, 'banMember']);
 
+    // Team task member toggle
+    Route::post('todos/{todo}/toggle-member', [TodoController::class, 'toggleMember']);
+
     // Profile
     Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
     Route::post('profile/password', [ProfileController::class, 'updatePassword']);
