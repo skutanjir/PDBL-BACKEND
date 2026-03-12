@@ -83,10 +83,6 @@ class TodoController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        if (!$isOwner) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
         return response()->json([
             'todo' => $todo,
         ]);
@@ -109,10 +105,6 @@ class TodoController extends Controller
         }
 
         if (!$isOwnerOrMember) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        if (!$isOwner) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -150,10 +142,6 @@ class TodoController extends Controller
         }
 
         if (!$isOwnerOrMember) {
-            return response()->json(['message' => 'Unauthorized'], 403);
-        }
-
-        if (!$isOwner) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 

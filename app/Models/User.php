@@ -55,10 +55,11 @@ class User extends Authenticatable
 
     public function teams()
     {
-        return $this->belongsToMany(Team::class);
+        return $this->belongsToMany(Team::class)->withPivot('status')->withTimestamps();
     }
 
     public function ownedTeams()
     {
         return $this->hasMany(Team::class, 'created_by');
+}
 }

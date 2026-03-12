@@ -2,6 +2,8 @@
 
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\TodoController;
+use App\Http\Controllers\ProfileController;
+use App\Http\Controllers\TeamController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -19,6 +21,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
 
     // Teams management
-    Route::apiResource('teams', \App\Http\Controllers\TeamController::class);
-    Route::post('teams/{team}/invite', [\App\Http\Controllers\TeamController::class, 'invite']);
+    Route::apiResource('teams', TeamController::class);
+    Route::post('teams/{team}/invite', [TeamController::class, 'invite']);
+    Route::post('teams/{team}/accept', [TeamController::class, 'acceptInvitation']);
+    Route::post('teams/{team}/decline', [TeamController::class, 'declineInvitation']);
+    Route::delete('teams/{team}/members/{user}', [TeamController::class, 'removeMember']);
+    Route::post('teams/{team}/members/{user}/ban', [TeamController::class, 'banMember']);
+
+    // Profile
+    Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
+    Route::post('profile/password', [ProfileController::class, 'updatePassword']);
+    Route::post('profile/email', [ProfileController::class, 'updateEmail']);
+    Route::post('profile/update', [ProfileController::class, 'updateProfile']);
 });

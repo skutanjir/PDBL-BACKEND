@@ -8,7 +8,7 @@ class Team extends Model
 {
     use \Illuminate\Database\Eloquent\Factories\HasFactory;
 
-    protected $fillable = ['name', 'created_by'];
+    protected $fillable = ['name', 'description', 'created_by'];
 
     public function owner()
     {
@@ -17,10 +17,11 @@ class Team extends Model
 
     public function members()
     {
-        return $this->belongsToMany(User::class);
+        return $this->belongsToMany(User::class)->withPivot('status')->withTimestamps();
     }
 
     public function todos()
     {
         return $this->hasMany(Todo::class);
+}
 }
