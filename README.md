@@ -172,6 +172,9 @@ PDBL-BACKEND/
    ```
    Edit `.env` and set your database credentials, JWT secret, and Firebase configuration (see [Environment Variables](#environment-variables)).
 
+> [!IMPORTANT]
+> You must add your Firebase Service Account JSON file to `storage/app/`. The filename should match the `FIREBASE_CREDENTIALS` path in your `.env` (e.g., `storage/app/firebase.json`). This file contains sensitive credentials and is excluded from version control.
+
 4. Generate application key and JWT secret:
    ```bash
    php artisan key:generate
