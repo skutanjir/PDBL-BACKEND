@@ -5,28 +5,55 @@ namespace App\Http\Controllers;
 use App\Models\Todo;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class TodoController extends Controller
 {
     public function index(Request $request)
     {
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
-        Log::info('Todo index request', ['user_id' => $user?->id, 'device_id' => $deviceId]);
+        $perPage = $request->query('per_page', 50);
+
+        $query = Todo::query();
 
         if ($user) {
-            $todos = Todo::where(function($query) use ($user) {
-                $query->where('user_id', $user->id)
-                      ->orWhereIn('team_id', $user->teams->pluck('id'));
-            })->latest()->get();
+            $query->where(function($q) use ($user, $request) {
+                if ($request->boolean('assigned_only')) {
+                    // Only my personal tasks OR team tasks specifically assigned to me
+                    $q->where('user_id', $user->id)
+                      ->orWhereJsonContains('assigned_emails', $user->email);
+                } else {
+                    // All tasks I created, my team's tasks, or tasks assigned to me
+                    // Optimized with a direct subquery to avoid loading full Team models
+                    $teamIds = DB::table('team_user')
+                        ->where('user_id', $user->id)
+                        ->where('status', 'accepted')
+                        ->pluck('team_id');
+
+                    $q->where('user_id', $user->id)
+                      ->orWhereIn('team_id', $teamIds)
+                      ->orWhereJsonContains('assigned_emails', $user->email);
+                }
+            });
         } elseif ($deviceId) {
-            $todos = Todo::where('device_id', $deviceId)->whereNull('user_id')->latest()->get();
+            $query->where('device_id', $deviceId)->whereNull('user_id');
         } else {
             return response()->json(['message' => 'Unauthorized or Device ID required'], 401);
         }
 
+        $todos = $query->with(['user', 'team.owner'])->latest()->paginate($perPage);
+
         return response()->json([
-            'todos' => $todos,
+            'status' => 'success',
+            'todos' => $todos->items(),
+            'pagination' => [
+                'current_page' => $todos->currentPage(),
+                'last_page' => $todos->lastPage(),
+                'per_page' => $todos->perPage(),
+                'total' => $todos->total(),
+            ]
         ]);
     }
 
@@ -37,13 +64,14 @@ class TodoController extends Controller
             'deskripsi' => 'nullable|string',
             'deadline' => 'nullable|date',
             'priority' => 'nullable|in:high,medium,low',
+            'is_completed' => 'nullable|boolean',
             'team_id' => 'nullable|exists:teams,id',
             'assigned_emails' => 'nullable|array',
         ]);
 
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
-        Log::info('Todo store request', ['user_id' => $user?->id, 'device_id' => $deviceId, 'judul' => $request->judul]);
 
         if (!$user && !$deviceId) {
             return response()->json(['message' => 'Unauthorized or Device ID required'], 401);
@@ -52,6 +80,7 @@ class TodoController extends Controller
         $todo = Todo::create([
             'judul' => $request->judul,
             'deskripsi' => $request->deskripsi,
+            'is_completed' => $request->is_completed ?? false,
             'deadline' => $request->deadline,
             'priority' => $request->priority ?? 'medium',
             'user_id' => $user ? $user->id : null,
@@ -61,14 +90,15 @@ class TodoController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Todo berhasil ditambahkan',
+            'message' => 'Todo added successfully',
             'todo' => $todo,
         ], 201);
     }
 
     public function show(Request $request, Todo $todo)
     {
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
 
         $isOwnerOrMember = false;
@@ -93,7 +123,8 @@ class TodoController extends Controller
 
     public function update(Request $request, Todo $todo)
     {
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
 
         $isOwnerOrMember = false;
@@ -121,17 +152,26 @@ class TodoController extends Controller
             'assigned_emails' => 'nullable|array',
         ]);
 
-        $todo->update($request->only(['judul', 'deskripsi', 'is_completed', 'deadline', 'priority', 'team_id', 'assigned_emails']));
+        $updateData = $request->only(['judul', 'deskripsi', 'deadline', 'priority', 'team_id', 'assigned_emails']);
+        
+        // Only allow is_completed update if it's NOT a team task
+        // Team tasks must use the toggle-member endpoint for status changes
+        if ($request->has('is_completed') && $todo->team_id === null) {
+            $updateData['is_completed'] = $request->input('is_completed');
+        }
+
+        $todo->update($updateData);
 
         return response()->json([
-            'message' => 'Todo berhasil diupdate',
+            'message' => 'Todo updated successfully',
             'todo' => $todo,
         ]);
     }
 
     public function destroy(Request $request, Todo $todo)
     {
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
 
         $isOwnerOrMember = false;
@@ -152,7 +192,7 @@ class TodoController extends Controller
         $todo->delete();
 
         return response()->json([
-            'message' => 'Todo berhasil dihapus',
+            'message' => 'Todo deleted successfully',
         ]);
     }
 
@@ -163,7 +203,8 @@ class TodoController extends Controller
      */
     public function toggleMember(Request $request, Todo $todo)
     {
-        $user = $request->user('sanctum');
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         if (!$user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
@@ -172,6 +213,8 @@ class TodoController extends Controller
         $assignedEmails = collect($todo->assigned_emails ?? [])->map(fn($e) => strtolower(trim($e)));
 
         // Check if user is owner or assigned
+        // Eager load team to avoid lazy loading in loop
+        $todo->loadMissing('team');
         $isOwner = $todo->team && $todo->team->created_by === $user->id;
         $isAssigned = $assignedEmails->contains($email);
 
@@ -206,5 +249,58 @@ class TodoController extends Controller
             'total_assigned' => $totalAssigned,
             'is_fully_completed' => $isFullyCompleted,
         ]);
+    }
+
+    /**
+     * Store multiple todos at once.
+     * Used for initial sync or guest migration.
+     */
+    public function bulkStore(Request $request)
+    {
+        $request->validate([
+            'tasks' => 'required|array',
+            'tasks.*.local_id' => 'required',
+            'tasks.*.judul' => 'required|string|max:255',
+            'tasks.*.deskripsi' => 'nullable|string',
+            'tasks.*.is_completed' => 'nullable|boolean',
+            'tasks.*.deadline' => 'nullable|date',
+            'tasks.*.priority' => 'nullable|in:high,medium,low',
+            'tasks.*.team_id' => 'nullable|exists:teams,id',
+            'tasks.*.assigned_emails' => 'nullable|array',
+        ]);
+
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        $results = [];
+
+        DB::transaction(function () use ($request, $user, &$results) {
+            foreach ($request->tasks as $taskData) {
+                $todo = Todo::create([
+                    'judul' => $taskData['judul'],
+                    'deskripsi' => $taskData['deskripsi'],
+                    'is_completed' => $taskData['is_completed'] ?? false,
+                    'deadline' => $taskData['deadline'],
+                    'priority' => $taskData['priority'] ?? 'medium',
+                    'user_id' => $user->id,
+                    'team_id' => $taskData['team_id'] ?? null,
+                    'assigned_emails' => $taskData['assigned_emails'] ?? null,
+                ]);
+
+                $results[] = [
+                    'local_id' => $taskData['local_id'],
+                    'api_id' => $todo->id,
+                    'todo' => $todo,
+                ];
+            }
+        });
+
+        return response()->json([
+            'message' => count($results) . ' tasks synced successfully',
+            'results' => $results,
+        ], 201);
     }
 }

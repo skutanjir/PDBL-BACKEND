@@ -9,38 +9,56 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 // Public routes
-Route::apiResource('todos', TodoController::class);
-Route::post('/register', [AuthController::class, 'register']);
-Route::post('/login', [AuthController::class, 'login']);
+// Public routes with auth throttling
+Route::middleware('throttle:auth')->group(function () {
+    Route::post('/register', [AuthController::class, 'register']);
+    Route::post('/login', [AuthController::class, 'login']);
+});
 
-// Protected routes
-Route::middleware('auth:sanctum')->group(function () {
+// Protected routes (Requires Auth)
+Route::middleware('throttle:auth')->post('/refresh', [AuthController::class, 'refresh']);
+
+// Protected routes (Requires Auth)
+Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     // Auth
-    Route::get('/user', function (Request $request) {
-        return $request->user();
-    });
+    Route::get('/user', [AuthController::class, 'user']);
     Route::post('/logout', [AuthController::class, 'logout']);
+    Route::post('/auth/register-fcm-token', [AuthController::class, 'registerFcmToken']);
 
+    Route::get('/users/check-email', [AuthController::class, 'checkEmail']);
+    
     // Teams management
     Route::apiResource('teams', TeamController::class);
-    Route::post('teams/{team}/invite', [TeamController::class, 'invite']);
-    Route::post('teams/{team}/accept', [TeamController::class, 'acceptInvitation']);
-    Route::post('teams/{team}/decline', [TeamController::class, 'declineInvitation']);
-    Route::delete('teams/{team}/members/{user}', [TeamController::class, 'removeMember']);
-    Route::post('teams/{team}/members/{user}/ban', [TeamController::class, 'banMember']);
-
+    Route::middleware('throttle:20,1')->group(function () {
+        Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
+        
+        // Profile
+        Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
+        Route::post('profile/password', [ProfileController::class, 'updatePassword']);
+        Route::post('profile/email', [ProfileController::class, 'updateEmail']);
+        Route::post('profile/update', [ProfileController::class, 'updateProfile']);
+    });
+    
+    Route::post('/teams/{team}/accept', [TeamController::class, 'acceptInvitation']);
+    Route::post('/teams/{team}/decline', [TeamController::class, 'declineInvitation']);
+    Route::delete('/teams/{team}/members/{user}', [TeamController::class, 'removeMember']);
+    
     // Team task member toggle
     Route::post('todos/{todo}/toggle-member', [TodoController::class, 'toggleMember']);
-
-    // Profile
-    Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
-    Route::post('profile/password', [ProfileController::class, 'updatePassword']);
-    Route::post('profile/email', [ProfileController::class, 'updateEmail']);
-    Route::post('profile/update', [ProfileController::class, 'updateProfile']);
 
     // Notifications
     Route::get('notifications', [NotificationController::class, 'index']);
     Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
     Route::post('notifications/{notification}/read', [NotificationController::class, 'markAsRead']);
     Route::delete('notifications/{notification}', [NotificationController::class, 'destroy']);
+
+    // Notification Settings
+    Route::get('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'index']);
+    Route::post('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'update']);
+});
+
+// Hybrid routes (Auth OR Device ID for Guests)
+Route::middleware(['throttle:api'])->group(function () {
+    Route::post('todos/bulk', [TodoController::class, 'bulkStore']);
+    Route::apiResource('todos', TodoController::class);
 });

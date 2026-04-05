@@ -10,9 +10,9 @@ class NotificationController extends Controller
     public function index(Request $request)
     {
         $notifications = $request->user()->notifications()
-            ->with('team')
             ->latest()
-            ->paginate(20);
+            ->limit(50)
+            ->get();
 
         return response()->json($notifications);
     }

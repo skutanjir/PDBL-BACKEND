@@ -23,5 +23,5 @@ class Team extends Model
     public function todos()
     {
         return $this->hasMany(Todo::class);
-}
+    }
 }

@@ -6,12 +6,16 @@ use Illuminate\Http\Request;
 use App\Models\Notification;
 use App\Models\Team;
 use App\Models\User;
+use App\Jobs\SendPushNotification;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 class TeamController extends Controller
 {
     public function index(Request $request)
     {
-        $user = $request->user();
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         
         // Teams where user is an accepted member
         $teams = $user->teams()
@@ -19,13 +23,15 @@ class TeamController extends Controller
             ->with(['owner', 'members' => function($q) {
                 $q->wherePivot('status', 'accepted');
             }])
-            ->get()
-            ->map(function($team) {
-                $totalTasks = $team->todos()->count();
-                $completedTasks = $team->todos()->where('is_completed', true)->count();
-                $team->progress = $totalTasks > 0 ? round(($completedTasks / $totalTasks) * 100) : 0;
-                return $team;
-            });
+            ->withCount(['todos', 'todos as completed_todos_count' => function($query) {
+                $query->where('is_completed', true);
+            }])
+            ->get();
+        
+        $teams->transform(function($team) {
+            $team->progress = $team->todos_count > 0 ? round(($team->completed_todos_count / $team->todos_count) * 100) : 0;
+            return $team;
+        });
 
         // Pending invitations for the user
         $invitations = $user->teams()
@@ -46,14 +52,16 @@ class TeamController extends Controller
             'description' => 'nullable|string|max:1000',
         ]);
 
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $team = \App\Models\Team::create([
             'name' => $request->name,
             'description' => $request->description,
-            'created_by' => $request->user()->id,
+            'created_by' => $user->id,
         ]);
 
         // Creator automatically becomes an accepted member
-        $team->members()->attach($request->user()->id, ['status' => 'accepted']);
+        $team->members()->attach($user->id, ['status' => 'accepted']);
 
         return response()->json([
             'message' => 'Team created successfully',
@@ -65,23 +73,29 @@ class TeamController extends Controller
 
     public function invite(Request $request, \App\Models\Team $team)
     {
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         // Only owner can invite
-        if ($team->created_by !== $request->user()->id) {
+        if ($team->created_by !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $request->validate([
-            'email' => 'required|email|exists:users,email',
+            'email' => 'required|email',
         ]);
 
         $userToInvite = \App\Models\User::where('email', $request->email)->first();
+        
+        if (!$userToInvite) {
+            return response()->json(['message' => 'User with this email does not exist.'], 404);
+        }
 
         if ($team->members()->where('user_id', $userToInvite->id)->where('status', '!=', 'declined')->exists()) {
             $membership = $team->members()->where('user_id', $userToInvite->id)->first();
             if ($membership->pivot->status === 'banned') {
                 return response()->json(['message' => 'This user is banned from this team'], 422);
             }
-            return response()->json(['message' => 'User is already a member or invited to this team'], 422);
+            return response()->json(['message' => 'An active invitation for this user already exists. Please wait for their response.'], 422);
         }
 
         // Attach with pending status
@@ -91,9 +105,22 @@ class TeamController extends Controller
         Notification::create([
             'user_id' => $userToInvite->id,
             'type' => 'invite',
-            'message' => "Anda telah diundang untuk bergabung dengan tim {$team->name}.",
+            'message' => "You have been invited to join team {$team->name}.",
             'team_id' => $team->id,
         ]);
+
+        // Push Notification (Queued)
+        SendPushNotification::dispatch(
+            $userToInvite,
+            "Team Invitation",
+            "You have been invited to join team {$team->name}.",
+            [
+                'team_id' => (string)$team->id, 
+                'type' => 'invite',
+                'priority' => 'high',
+                'description' => 'Click to view team details and respond (Accept/Decline).'
+            ]
+        );
 
         return response()->json([
             'message' => 'User invited to team successfully',
@@ -103,7 +130,8 @@ class TeamController extends Controller
 
     public function acceptInvitation(Request $request, \App\Models\Team $team)
     {
-        $user = $request->user();
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         
         $membership = $team->members()->where('user_id', $user->id)->first();
         
@@ -123,7 +151,8 @@ class TeamController extends Controller
 
     public function declineInvitation(Request $request, \App\Models\Team $team)
     {
-        $user = $request->user();
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         
         $membership = $team->members()->where('user_id', $user->id)->first();
         
@@ -140,46 +169,67 @@ class TeamController extends Controller
 
     public function show(\App\Models\Team $team)
     {
-        $user = auth()->user();
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
         $isMember = $team->members()->where('user_id', $user->id)->where('status', 'accepted')->exists();
 
         if (!$isMember) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $allTeamTasks = $team->todos()->get();
-        $members = $team->members()
-            ->wherePivot('status', 'accepted')
-            ->get()
-            ->map(function($user) use ($team, $allTeamTasks) {
-                $memberEmail = strtolower(trim($user->email));
-                
-                // Get tasks assigned to this member (by user_id OR by assigned_emails)
-                $memberTasks = $allTeamTasks->filter(function($todo) use ($user, $memberEmail) {
-                    // Task assigned by user_id
-                    if ($todo->user_id === $user->id) return true;
-                    // Task assigned by email in assigned_emails
-                    $assignedEmails = collect($todo->assigned_emails ?? [])->map(fn($e) => strtolower(trim($e)));
-                    return $assignedEmails->contains($memberEmail);
-                });
-                
-                $totalTasks = $memberTasks->count();
-                $completedTasks = $memberTasks->filter(function($todo) use ($memberEmail) {
-                    $completedBy = collect($todo->completed_by ?? []);
-                    $assignedEmails = collect($todo->assigned_emails ?? []);
-                    
-                    // If task uses completed_by system (has assigned_emails)
-                    if ($assignedEmails->isNotEmpty()) {
-                        return $completedBy->contains(fn($e) => strtolower(trim((string)$e)) === $memberEmail);
+        $allTeamTasks = DB::table('todos')
+            ->where('team_id', $team->id)
+            ->select('id', 'user_id', 'assigned_emails', 'completed_by', 'is_completed')
+            ->get();
+            
+        $members = $team->members()->wherePivot('status', 'accepted')->get();
+
+        // One pass through all tasks to build a summary map for all members
+        // Using a fast PHP array instead of full Eloquent models for calculation
+        $memberStats = [];
+        foreach ($allTeamTasks as $todo) {
+            $assignedEmails = json_decode($todo->assigned_emails ?? '[]', true);
+            $completedBy = json_decode($todo->completed_by ?? '[]', true);
+            
+            $assignedEmails = collect($assignedEmails)->map(fn($e) => strtolower(trim($e)))->unique();
+            $completedEmails = collect($completedBy)->map(fn($e) => strtolower(trim((string)$e)))->unique();
+
+            $processedEmailsInThisTask = [];
+
+            // A. Count tasks from assigned_emails
+            foreach ($assignedEmails as $email) {
+                if (!isset($memberStats[$email])) $memberStats[$email] = ['total' => 0, 'completed' => 0];
+                $memberStats[$email]['total']++;
+                if ($completedEmails->contains($email)) {
+                    $memberStats[$email]['completed']++;
+                }
+                $processedEmailsInThisTask[] = $email;
+            }
+
+            // B. Count tasks from user_id (if not already covered by email assignment)
+            if ($todo->user_id) {
+                $owner = $members->firstWhere('id', $todo->user_id);
+                if ($owner) {
+                    $ownerEmail = strtolower(trim($owner->email));
+                    if (!in_array($ownerEmail, $processedEmailsInThisTask)) {
+                        if (!isset($memberStats[$ownerEmail])) $memberStats[$ownerEmail] = ['total' => 0, 'completed' => 0];
+                        $memberStats[$ownerEmail]['total']++;
+                        if ($todo->is_completed) {
+                            $memberStats[$ownerEmail]['completed']++;
+                        }
                     }
-                    // Fallback: legacy task with is_completed
-                    return $todo->is_completed;
-                })->count();
-                
-                $user->progress = $totalTasks > 0 ? round(($completedTasks / $totalTasks) * 100) : 0;
-                $user->role = ($user->id === $team->created_by) ? 'Ketua Team' : 'Member';
-                return $user;
-            });
+                }
+            }
+        }
+
+        $members = $members->map(function($user) use ($team, $memberStats) {
+            $email = strtolower(trim($user->email));
+            $stats = $memberStats[$email] ?? ['total' => 0, 'completed' => 0];
+            
+            $user->progress = $stats['total'] > 0 ? round(($stats['completed'] / $stats['total']) * 100) : 0;
+            $user->role = ($user->id === $team->created_by) ? 'Team Leader' : 'Member';
+            return $user;
+        });
 
         return response()->json([
             'team' => [
@@ -190,13 +240,14 @@ class TeamController extends Controller
                 'owner' => $team->owner,
                 'members' => $members,
             ],
-            'tasks' => $team->todos()->with('user')->get(),
+            // Tasks themselves are still loaded once via Eloquent for JSON response
+            'tasks' => $team->todos()->with('user')->latest()->get(),
         ]);
     }
 
     public function update(Request $request, \App\Models\Team $team)
     {
-        if ($team->created_by !== auth()->id()) {
+        if ($team->created_by !== auth('api')->id()) {
             return response()->json(['message' => 'Only owner can update team'], 403);
         }
 
@@ -215,7 +266,7 @@ class TeamController extends Controller
 
     public function removeMember(Request $request, \App\Models\Team $team, \App\Models\User $user)
     {
-        if ($team->created_by !== auth()->id()) {
+        if ($team->created_by !== auth('api')->id()) {
             return response()->json(['message' => 'Only owner can remove members'], 403);
         }
 
@@ -229,39 +280,27 @@ class TeamController extends Controller
         Notification::create([
             'user_id' => $user->id,
             'type' => 'kick',
-            'message' => "Anda telah dikeluarkan dari tim {$team->name}.",
+            'message' => "You have been removed from team {$team->name}.",
             'team_id' => $team->id,
         ]);
+
+        // Push Notification (Queued)
+        SendPushNotification::dispatch(
+            $user,
+            "Team Updated",
+            "You have been removed from team {$team->name}.",
+            ['team_id' => (string)$team->id, 'type' => 'kick']
+        );
 
         return response()->json(['message' => 'Member removed successfully']);
     }
 
-    public function banMember(Request $request, \App\Models\Team $team, \App\Models\User $user)
-    {
-        if ($team->created_by !== auth()->id()) {
-            return response()->json(['message' => 'Only owner can ban members'], 403);
-        }
-
-        if ($user->id === $team->created_by) {
-            return response()->json(['message' => 'Cannot ban the owner'], 400);
-        }
-
-        $team->members()->updateExistingPivot($user->id, ['status' => 'banned']);
-
-        // Notification
-        Notification::create([
-            'user_id' => $user->id,
-            'type' => 'ban',
-            'message' => "Anda telah dilarang (banned) dari tim {$team->name}.",
-            'team_id' => $team->id,
-        ]);
-
-        return response()->json(['message' => 'Member banned successfully']);
-    }
 
     public function destroy(Request $request, \App\Models\Team $team)
     {
-        if ($team->created_by !== $request->user()->id) {
+        /** @var \App\Models\User $user */
+        $user = auth('api')->user();
+        if ($team->created_by !== $user->id) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 

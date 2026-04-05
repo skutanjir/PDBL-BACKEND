@@ -1,8 +1,15 @@
+# Logs and common files
 *.log
 .DS_Store
+Thumbs.db
+
+# Environment and sensitive data
 .env
 .env.backup
 .env.production
+auth.json
+
+# IDE/Tools
 .phpactor.json
 .phpunit.result.cache
 /.fleet
@@ -11,14 +18,27 @@
 /.phpunit.cache
 /.vscode
 /.zed
-/auth.json
+
+# Dependencies and built assets
 /node_modules
+/vendor
 /public/build
 /public/hot
 /public/storage
+
+# Storage and temporary files
 /storage/*.key
 /storage/pail
-/vendor
+/storage/framework/cache/data/
+/storage/framework/views/*.php
+/storage/framework/sessions/*
+/storage/logs/*.log
+
+# Project-specific temporary exports
+routes.txt
+routes_utf8.txt
+indexes_v2.php
+
+# Local development
 Homestead.json
 Homestead.yaml
-Thumbs.db
