@@ -10,9 +10,12 @@ docker-compose.yml
 phpunit.xml
 tests/
 storage/*.key
+storage/app/*.json
+storage/app/private/
 .phpunit.result.cache
 .env.example
 README.md
+upload.md
 vendor/
 node_modules/
 npm-debug.log

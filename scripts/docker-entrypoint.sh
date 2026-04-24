@@ -18,18 +18,18 @@ if [ -n "$PORT" ]; then
     sed -i "s/<VirtualHost \*:80>/<VirtualHost \*:$PORT>/g" /etc/apache2/sites-available/000-default.conf
 fi
 
-# Fix storage permissions after volume mount
-# Volumes are mounted as root — Apache (www-data) needs write access
-chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
-chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
-
-# Ensure required storage subdirectories exist (volume mount may be empty on first run)
+# Ensure required storage subdirectories exist first (volume mount may be empty on first run)
 mkdir -p /var/www/html/storage/app/public/avatars
 mkdir -p /var/www/html/storage/app/public/teams
 mkdir -p /var/www/html/storage/logs
 mkdir -p /var/www/html/storage/framework/cache
 mkdir -p /var/www/html/storage/framework/sessions
 mkdir -p /var/www/html/storage/framework/views
+
+# Fix storage permissions after mkdir
+# chown may fail on GCS FUSE mounts (FUSE does not support chown) — that is expected
+chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
+chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || true
 
 # Optimize Laravel (jangan exit kalau gagal)
 php artisan config:cache || true
