@@ -34,9 +34,12 @@ REST API backend for the WUDI task management platform. Built with Laravel 12 an
 ## Features
 
 - **JWT Authentication** -- Stateless token-based auth with automatic refresh and idempotent token rotation to handle concurrent requests.
+- **Google OAuth** -- Sign in or register using a Google ID token. Existing accounts with matching email are linked automatically; new accounts are provisioned on first login.
+- **Email Verification** -- New registrations require email confirmation via a 6-digit OTP before full access is granted. Resend endpoint included.
+- **Password Reset via OTP** -- Forgot password flow: request OTP by email, verify the 6-digit code, then submit a new password. OTPs are single-use and expire after 10 minutes.
 - **Guest Mode** -- Full task management without an account using device-based identification (X-Device-ID). Guest data migrates automatically on registration or login.
 - **Task Management** -- CRUD with deadlines, priority levels (high/medium/low), completion tracking, pagination, and bulk sync for offline-first clients.
-- **Team Collaboration** -- Create teams, invite members by email, accept or decline invitations, remove or ban members. Owner-based permission model.
+- **Team Collaboration** -- Create teams with avatar, deadline, and max member limits. Invite members by email, accept or decline invitations, remove or ban members. Owner-based permission model.
 - **Team Task Completion** -- Per-member completion tracking via `completed_by` array. A task is marked complete only when all assigned members have individually checked it.
 - **Push Notifications** -- Firebase Cloud Messaging (FCM HTTP v1) with queued delivery via Laravel Jobs. Notifications for team invitations, member removals, and deadline reminders.
 - **In-App Notifications** -- Persistent notification records with read/unread state, mark-as-read, and bulk mark-all-as-read.
@@ -217,6 +220,12 @@ PDBL-BACKEND/
 | `QUEUE_CONNECTION`     | Queue driver                               | `database`                     |
 | `FIREBASE_CREDENTIALS` | Path to Firebase service account JSON      | `storage/app/firebase.json`    |
 | `FIREBASE_PROJECT_ID`  | Firebase project identifier                | `your-project-id`              |
+| `MAIL_MAILER`          | Mail transport driver                      | `smtp`                         |
+| `MAIL_HOST`            | SMTP host                                  | `smtp.gmail.com`               |
+| `MAIL_PORT`            | SMTP port                                  | `587`                          |
+| `MAIL_USERNAME`        | SMTP username / sender address             | `app@example.com`              |
+| `MAIL_PASSWORD`        | SMTP password or app password              | (your password)                |
+| `MAIL_FROM_ADDRESS`    | From address used in all outgoing mail     | `app@example.com`              |
 
 ---
 
@@ -265,15 +274,21 @@ Guest endpoints accept `X-Device-ID: <uuid>` header as alternative.
 
 ### 1. Authentication
 
-| Method | Endpoint                    | Auth     | Description                                          |
-|--------|-----------------------------|----------|------------------------------------------------------|
-| POST   | `/register`                 | Public   | Create account. Syncs guest data if X-Device-ID sent |
-| POST   | `/login`                    | Public   | Authenticate and receive JWT token                   |
-| POST   | `/refresh`                  | Bearer   | Refresh JWT token (idempotent, race-safe)            |
-| GET    | `/user`                     | Bearer   | Get authenticated user profile                       |
-| POST   | `/logout`                   | Bearer   | Invalidate current token                             |
-| POST   | `/auth/register-fcm-token`  | Bearer   | Register Firebase Cloud Messaging device token       |
-| GET    | `/users/check-email`        | Bearer   | Check if email exists and get user info              |
+| Method | Endpoint                         | Auth     | Description                                             |
+|--------|----------------------------------|----------|---------------------------------------------------------|
+| POST   | `/register`                      | Public   | Create account. Syncs guest data if X-Device-ID sent    |
+| POST   | `/login`                         | Public   | Authenticate and receive JWT token                      |
+| POST   | `/auth/google`                   | Public   | Sign in or register with Google ID token                |
+| POST   | `/auth/verify-email`             | Public   | Verify new account email with 6-digit OTP               |
+| POST   | `/auth/resend-verification`      | Public   | Resend email verification OTP                           |
+| POST   | `/auth/forgot-password`          | Public   | Send password reset OTP to email                        |
+| POST   | `/auth/verify-otp`               | Public   | Verify password reset OTP and get reset token           |
+| POST   | `/auth/reset-password`           | Public   | Submit new password using verified reset token          |
+| POST   | `/refresh`                       | Bearer   | Refresh JWT token (idempotent, race-safe)               |
+| GET    | `/user`                          | Bearer   | Get authenticated user profile                          |
+| POST   | `/logout`                        | Bearer   | Invalidate current token                                |
+| POST   | `/auth/register-fcm-token`       | Bearer   | Register Firebase Cloud Messaging device token          |
+| GET    | `/users/check-email`             | Bearer   | Check if email exists and get user info                 |
 
 **Register / Login Payload:**
 ```json
@@ -284,6 +299,18 @@ Guest endpoints accept `X-Device-ID: <uuid>` header as alternative.
   "password_confirmation": "password"
 }
 ```
+
+**Google Login Payload:**
+```json
+{
+  "id_token": "<google_id_token_from_client>"
+}
+```
+
+**Password Reset Flow:**
+1. `POST /auth/forgot-password` with `{ "email": "..." }` -- sends 6-digit OTP via email, expires in 10 minutes.
+2. `POST /auth/verify-otp` with `{ "email": "...", "otp": "123456" }` -- returns a one-time `reset_token`.
+3. `POST /auth/reset-password` with `{ "email": "...", "reset_token": "...", "password": "...", "password_confirmation": "..." }`.
 
 **Token Refresh:** Send the current (possibly expiring) token in the Authorization header. The endpoint uses JTI-based idempotency caching to safely handle concurrent refresh requests during the blacklist grace period.
 
@@ -412,6 +439,7 @@ Guest endpoints accept `X-Device-ID: <uuid>` header as alternative.
 User (1) ---> (*) Todo
 User (1) ---> (*) Notification
 User (1) ---> (1) UserNotificationSetting
+User (1) ---> (*) PasswordOtp
 User (*) <--> (*) Team [pivot: team_user with status]
 Team (1) ---> (*) Todo
 Team (1) ---> (1) User [owner via created_by]
@@ -440,6 +468,13 @@ Team (1) ---> (1) User [owner via created_by]
 | `add_completed_by_to_todos_table`                     | JSON array tracking per-member completion       |
 | `create_user_notification_settings_table`             | Per-user reminder preferences                  |
 | `add_timezone_to_users_table`                         | User timezone for localized reminders          |
+| `add_google_id_to_users_table`                        | Google OAuth: stores google_id for linked accounts |
+| `create_password_otp_table`                           | OTP records for email verification and password reset |
+| `add_deadline_to_teams_table`                         | Optional deadline field on team                |
+| `change_teams_description_to_text`                    | Widens description column to TEXT              |
+| `add_type_to_password_otps_table`                     | OTP type: email_verification or password_reset |
+| `add_avatar_to_teams_table`                           | Team avatar image path                         |
+| `add_max_members_to_teams_table`                      | Maximum allowed member count per team          |
 | `add_performance_indexes_to_todos` (v1, v2)           | Database indexes for query optimization        |
 | `add_today_target_to_users_table`                     | Daily task target setting                      |
 

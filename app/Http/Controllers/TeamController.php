@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Jobs\SendPushNotification;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class TeamController extends Controller
 {
@@ -49,7 +50,8 @@ class TeamController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'description' => 'nullable|string|max:1000',
+            'description' => 'nullable|string|max:300',
+            'max_members' => 'nullable|integer|min:1|max:100',
         ]);
 
         /** @var \App\Models\User $user */
@@ -57,6 +59,7 @@ class TeamController extends Controller
         $team = \App\Models\Team::create([
             'name' => $request->name,
             'description' => $request->description,
+            'max_members' => $request->input('max_members', 100),
             'created_by' => $user->id,
         ]);
 
@@ -85,9 +88,15 @@ class TeamController extends Controller
         ]);
 
         $userToInvite = \App\Models\User::where('email', $request->email)->first();
-        
+
         if (!$userToInvite) {
             return response()->json(['message' => 'User with this email does not exist.'], 404);
+        }
+
+        // Check capacity
+        $currentAccepted = $team->members()->wherePivot('status', 'accepted')->count();
+        if ($currentAccepted >= $team->max_members) {
+            return response()->json(['message' => "Team is full. Maximum capacity is {$team->max_members} members."], 422);
         }
 
         if ($team->members()->where('user_id', $userToInvite->id)->where('status', '!=', 'declined')->exists()) {
@@ -236,7 +245,9 @@ class TeamController extends Controller
                 'id' => $team->id,
                 'name' => $team->name,
                 'description' => $team->description,
+                'max_members' => $team->max_members,
                 'created_by' => $team->created_by,
+                'avatar_url' => $team->avatar_url,
                 'owner' => $team->owner,
                 'members' => $members,
             ],
@@ -254,9 +265,10 @@ class TeamController extends Controller
         $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'nullable|string',
+            'max_members' => 'nullable|integer|min:1|max:100',
         ]);
 
-        $team->update($request->only('name', 'description'));
+        $team->update($request->only('name', 'description', 'max_members'));
 
         return response()->json([
             'message' => 'Team updated successfully',
@@ -295,6 +307,30 @@ class TeamController extends Controller
         return response()->json(['message' => 'Member removed successfully']);
     }
 
+
+    public function updateAvatar(Request $request, \App\Models\Team $team)
+    {
+        if ($team->created_by !== auth('api')->id()) {
+            return response()->json(['message' => 'Only the team owner can change the team photo'], 403);
+        }
+
+        $maxSize = $request->file('avatar')->getClientOriginalExtension() === 'gif' ? 2048 : 1024;
+        $request->validate([
+            'avatar' => "required|image|mimes:jpeg,png,jpg,webp,gif|max:$maxSize",
+        ]);
+
+        if ($team->avatar) {
+            Storage::disk('public')->delete($team->avatar);
+        }
+
+        $path = $request->file('avatar')->store('teams', 'public');
+        $team->update(['avatar' => $path]);
+
+        return response()->json([
+            'message' => 'Team photo updated successfully',
+            'avatar_url' => $team->avatar_url,
+        ]);
+    }
 
     public function destroy(Request $request, \App\Models\Team $team)
     {

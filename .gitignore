@@ -5,9 +5,15 @@ Thumbs.db
 
 # Environment and sensitive data
 .env
-.env.backup
-.env.production
+.env.*
 auth.json
+
+# Credentials and private keys
+*.p12
+*.pem
+*.key
+*firebase-adminsdk*.json
+*service-account*.json
 
 # IDE/Tools
 .phpactor.json
@@ -39,6 +45,11 @@ routes.txt
 routes_utf8.txt
 indexes_v2.php
 
+# Docker local overrides
+docker-compose.override.yml
+
 # Local development
 Homestead.json
 Homestead.yaml
+
+public/storage/*

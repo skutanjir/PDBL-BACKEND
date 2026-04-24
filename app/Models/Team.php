@@ -8,7 +8,15 @@ class Team extends Model
 {
     use \Illuminate\Database\Eloquent\Factories\HasFactory;
 
-    protected $fillable = ['name', 'description', 'created_by'];
+    protected $fillable = ['name', 'description', 'max_members', 'created_by', 'avatar'];
+
+    protected $appends = ['avatar_url'];
+
+    public function getAvatarUrlAttribute(): ?string
+    {
+        if (!$this->avatar) return null;
+        return asset('storage/' . $this->avatar);
+    }
 
     public function owner()
     {

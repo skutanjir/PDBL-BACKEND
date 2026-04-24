@@ -3,10 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Models\PasswordOtp;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
+use App\Mail\OtpMail;
+use App\Mail\VerificationMail;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
 use PHPOpenSourceSaver\JWTAuth\Facades\JWTAuth;
 use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenBlacklistedException;
@@ -22,23 +26,30 @@ class AuthController extends Controller
         ]);
 
         $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
+            'name'     => $request->name,
+            'email'    => $request->email,
             'password' => Hash::make($request->password),
+            // email_verified_at intentionally null until OTP is confirmed
         ]);
 
-        $token = JWTAuth::fromUser($user);
-
-        $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
-        if ($deviceId) {
-            \App\Models\Todo::where('device_id', $deviceId)
-                ->whereNull('user_id')
-                ->update(['user_id' => $user->id, 'device_id' => null]);
+        // Send email verification OTP
+        $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+        PasswordOtp::where('email', $user->email)->delete();
+        PasswordOtp::create([
+            'email'      => $user->email,
+            'otp'        => $otp,
+            'type'       => 'email_verification',
+            'expires_at' => now()->addMinutes(30),
+        ]);
+        try {
+            Mail::to($user->email)->send(new VerificationMail($otp, $user->name));
+        } catch (\Exception $e) {
+            Log::error('Failed to send verification email to ' . $user->email . ': ' . $e->getMessage());
         }
+
         return response()->json([
-            'message' => 'Registration successful',
-            'user' => $user,
-            'token' => $token,
+            'message' => 'Registration successful. Please check your email to verify your account.',
+            'email'   => $user->email,
         ], 201);
     }
 
@@ -50,6 +61,24 @@ class AuthController extends Controller
         ]);
 
         $credentials = $request->only('email', 'password');
+
+        $existingUser = User::where('email', $request->email)->first();
+
+        // Account registered via Google (no password)
+        if ($existingUser && is_null($existingUser->password)) {
+            throw ValidationException::withMessages([
+                'email' => ['This account was created with Google Sign-In. Please use the "Continue with Google" button to log in.'],
+            ]);
+        }
+
+        // Account exists but email not verified yet — return special 403
+        if ($existingUser && is_null($existingUser->email_verified_at)) {
+            return response()->json([
+                'status'  => 'email_not_verified',
+                'message' => 'Please verify your email address before logging in.',
+                'email'   => $existingUser->email,
+            ], 403);
+        }
 
         /** @var \PHPOpenSourceSaver\JWTAuth\JWTGuard $guard */
         $guard = auth('api');
@@ -233,7 +262,7 @@ class AuthController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Format email tidak valid.',
+                'message' => 'Invalid email format.',
                 'errors' => $e->errors(),
             ], 422);
         }
@@ -256,7 +285,333 @@ class AuthController extends Controller
         return response()->json([
             'status' => 'error',
             'exists' => false,
-            'message' => 'User dengan email tersebut tidak ditemukan.',
+            'message' => 'No account found with that email address.',
         ], 404);
+    }
+
+    // ─── Google Sign-In ──────────────────────────────────────────────────────
+
+    public function googleLogin(Request $request)
+    {
+        $request->validate([
+            'google_id'  => 'required|string',
+            'email'      => 'required|email|string',
+            'name'       => 'required|string',
+            'avatar_url' => 'nullable|string',
+        ]);
+
+        $user = User::where('google_id', $request->google_id)
+            ->orWhere('email', $request->email)
+            ->first();
+
+        $accountConverted = false;
+
+        if ($user) {
+            // Detect a regular-account user signing in with Google for the first time
+            $accountConverted = is_null($user->google_id) && !is_null($user->password);
+
+            $updateData = [
+                'google_id'         => $request->google_id,
+                'name'              => $user->name ?: $request->name,
+                'email_verified_at' => $user->email_verified_at ?? now(),
+            ];
+
+            // Convert to Google-only: wipe password so email/password login is blocked
+            if ($accountConverted) {
+                $updateData['password'] = null;
+                // Also delete any pending OTPs for this account
+                PasswordOtp::where('email', $user->email)->delete();
+            }
+
+            $user->fill($updateData)->save();
+        } else {
+            $user = User::create([
+                'name'              => $request->name,
+                'email'             => $request->email,
+                'google_id'         => $request->google_id,
+                'password'          => null,
+                'email_verified_at' => now(),
+            ]);
+        }
+
+        $token = JWTAuth::fromUser($user);
+
+        $deviceId = $request->header('X-Device-ID') ?? $request->device_id;
+        if ($deviceId) {
+            \App\Models\Todo::where('device_id', $deviceId)
+                ->whereNull('user_id')
+                ->update(['user_id' => $user->id, 'device_id' => null]);
+        }
+
+        return response()->json([
+            'message'           => 'Google login successful',
+            'user'              => $user,
+            'token'             => $token,
+            'account_converted' => $accountConverted,
+        ]);
+    }
+
+    // ─── Email Verification ──────────────────────────────────────────────────
+
+    public function verifyEmail(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|string',
+            'otp'   => 'required|string|size:4',
+        ]);
+
+        // Rate limit: max 5 wrong attempts per 10 minutes
+        $attemptKey = 'verify_email_attempts:' . $request->email;
+        $attempts   = Cache::get($attemptKey, 0);
+        if ($attempts >= 5) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Too many failed attempts. Please request a new code.',
+            ], 429);
+        }
+
+        $record = PasswordOtp::where('email', $request->email)
+            ->where('otp', $request->otp)
+            ->where('type', 'email_verification')
+            ->latest()
+            ->first();
+
+        if (!$record) {
+            Cache::put($attemptKey, $attempts + 1, now()->addMinutes(10));
+            return response()->json(['status' => 'error', 'message' => 'Invalid verification code.'], 422);
+        }
+
+        if ($record->isExpired()) {
+            $record->delete();
+            return response()->json(['status' => 'error', 'message' => 'Verification code has expired. Please request a new one.'], 422);
+        }
+
+        $user = User::where('email', $request->email)->first();
+        if (!$user) {
+            return response()->json(['status' => 'error', 'message' => 'User not found.'], 404);
+        }
+
+        $user->update(['email_verified_at' => now()]);
+        $record->delete();
+        Cache::forget($attemptKey);
+
+        $token = JWTAuth::fromUser($user);
+
+        return response()->json([
+            'status'  => 'success',
+            'message' => 'Email verified successfully.',
+            'user'    => $user,
+            'token'   => $token,
+        ]);
+    }
+
+    public function resendVerification(Request $request)
+    {
+        $request->validate(['email' => 'required|email|string']);
+
+        $user = User::where('email', $request->email)->first();
+        if (!$user) {
+            return response()->json(['status' => 'error', 'message' => 'Email not found.'], 404);
+        }
+
+        if (!is_null($user->email_verified_at)) {
+            return response()->json(['status' => 'success', 'message' => 'Email is already verified.']);
+        }
+
+        // Google users are auto-verified (Google already verified their email)
+        if (!is_null($user->google_id)) {
+            $user->update(['email_verified_at' => now()]);
+            return response()->json(['status' => 'success', 'message' => 'Email verified via Google.']);
+        }
+
+        // Rate limit: max 3 resends per 10 minutes per email
+        $countKey   = 'verify_resend_count:' . $user->email;
+        $cooldownKey = 'verify_resend_cooldown:' . $user->email;
+
+        if (Cache::has($cooldownKey)) {
+            $seconds = Cache::get($cooldownKey);
+            return response()->json([
+                'status'  => 'error',
+                'message' => "Please wait {$seconds} seconds before requesting another code.",
+                'retry_after' => $seconds,
+            ], 429);
+        }
+
+        $count = Cache::get($countKey, 0);
+        if ($count >= 3) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Too many attempts. Please wait 10 minutes before requesting a new code.',
+                'retry_after' => 600,
+            ], 429);
+        }
+
+        Cache::put($countKey, $count + 1, now()->addMinutes(10));
+        Cache::put($cooldownKey, 60, now()->addSeconds(60));
+
+        $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+        PasswordOtp::where('email', $user->email)->where('type', 'email_verification')->delete();
+        PasswordOtp::create([
+            'email'      => $user->email,
+            'otp'        => $otp,
+            'type'       => 'email_verification',
+            'expires_at' => now()->addMinutes(30),
+        ]);
+        Mail::to($user->email)->send(new VerificationMail($otp, $user->name));
+
+        return response()->json([
+            'status'  => 'success',
+            'message' => 'Verification code resent.',
+            'retry_after' => 60,
+        ]);
+    }
+
+    // ─── Forgot Password (OTP via Gmail) ────────────────────────────────────
+
+    public function forgotPassword(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|string',
+        ]);
+
+        $user = User::where('email', $request->email)->first();
+        if (!$user) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Email address not found.',
+            ], 404);
+        }
+
+        if (!is_null($user->google_id)) {
+            return response()->json([
+                'status'  => 'google_account',
+                'message' => 'Sorry, you can\'t reset your password. You signed in with Google.',
+            ], 403);
+        }
+
+        if (is_null($user->email_verified_at)) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Please verify your email address first before resetting your password.',
+            ], 403);
+        }
+
+        // Rate limit: 60s cooldown between resends, max 5 per hour
+        $cooldownKey = 'forgot_pw_cooldown:' . $user->email;
+        $countKey    = 'forgot_pw_count:' . $user->email;
+
+        if (Cache::has($cooldownKey)) {
+            return response()->json([
+                'status'      => 'error',
+                'message'     => 'Please wait 60 seconds before requesting another code.',
+                'retry_after' => 60,
+            ], 429);
+        }
+
+        $count = Cache::get($countKey, 0);
+        if ($count >= 5) {
+            return response()->json([
+                'status'      => 'error',
+                'message'     => 'Too many attempts. Please wait 1 hour before trying again.',
+                'retry_after' => 3600,
+            ], 429);
+        }
+
+        Cache::put($cooldownKey, true, now()->addSeconds(60));
+        Cache::put($countKey, $count + 1, now()->addHour());
+
+        // Generate 4-digit OTP
+        $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+
+        // Delete old password-reset OTPs for this email
+        PasswordOtp::where('email', $request->email)->where('type', 'password_reset')->delete();
+
+        // Store new OTP (expires in 30 minutes, single-use)
+        PasswordOtp::create([
+            'email'      => $request->email,
+            'otp'        => $otp,
+            'type'       => 'password_reset',
+            'expires_at' => now()->addMinutes(30),
+        ]);
+
+        // Send OTP via HTML email template
+        Mail::to($request->email)->send(new OtpMail($otp, $user->name));
+
+        return response()->json([
+            'status'  => 'success',
+            'message' => 'OTP has been sent to your email.',
+        ]);
+    }
+
+    public function verifyOtp(Request $request)
+    {
+        $request->validate([
+            'email' => 'required|email|string',
+            'otp'   => 'required|string|size:4',
+        ]);
+
+        $record = PasswordOtp::where('email', $request->email)
+            ->where('otp', $request->otp)
+            ->where('type', 'password_reset')
+            ->latest()
+            ->first();
+
+        if (!$record) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Invalid OTP code.',
+            ], 422);
+        }
+
+        if ($record->isExpired()) {
+            $record->delete();
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'OTP code has expired. Please request a new one.',
+            ], 422);
+        }
+
+        return response()->json([
+            'status'  => 'success',
+            'message' => 'OTP verified successfully.',
+        ]);
+    }
+
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'email'                 => 'required|email|string',
+            'otp'                   => 'required|string|size:4',
+            'password'              => 'required|string|min:8|confirmed',
+        ]);
+
+        $record = PasswordOtp::where('email', $request->email)
+            ->where('otp', $request->otp)
+            ->where('type', 'password_reset')
+            ->latest()
+            ->first();
+
+        if (!$record || $record->isExpired()) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'OTP is invalid or has expired.',
+            ], 422);
+        }
+
+        $user = User::where('email', $request->email)->first();
+        if (!$user) {
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'User not found.',
+            ], 404);
+        }
+
+        $user->update(['password' => Hash::make($request->password)]);
+        $record->delete();
+
+        return response()->json([
+            'status'  => 'success',
+            'message' => 'Password updated successfully. Please log in.',
+        ]);
     }
 }

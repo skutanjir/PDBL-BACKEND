@@ -1,0 +1,40 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-8000}:${PORT:-8000}"
+    environment:
+      - PORT=${PORT:-8000}
+      - APP_ENV=${APP_ENV:-production}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_KEY=${APP_KEY}
+      - APP_URL=${APP_URL}
+      - DB_CONNECTION=${DB_CONNECTION:-pgsql}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_DATABASE=${DB_DATABASE}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - QUEUE_CONNECTION=${QUEUE_CONNECTION:-database}
+      - FILESYSTEM_DISK=${FILESYSTEM_DISK:-public}
+      - JWT_SECRET=${JWT_SECRET}
+      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+      - MAIL_MAILER=${MAIL_MAILER}
+      - MAIL_HOST=${MAIL_HOST}
+      - MAIL_PORT=${MAIL_PORT}
+      - MAIL_USERNAME=${MAIL_USERNAME}
+      - MAIL_PASSWORD=${MAIL_PASSWORD}
+      - MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS}
+      - MAIL_FROM_NAME=${MAIL_FROM_NAME}
+    volumes:
+      # Persist uploaded photos and files across container restarts/redeployments
+      - storage_data:/var/www/html/storage/app/public
+      # Persist logs
+      - storage_logs:/var/www/html/storage/logs
+    restart: unless-stopped
+
+volumes:
+  storage_data:
+    driver: local
+  storage_logs:
+    driver: local

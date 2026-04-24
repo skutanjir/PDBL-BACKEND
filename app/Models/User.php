@@ -25,6 +25,8 @@ class User extends Authenticatable implements JWTSubject
         'avatar',
         'fcm_token',
         'timezone',
+        'google_id',
+        'email_verified_at',
     ];
 
     protected $appends = ['avatar_url'];
@@ -35,17 +37,7 @@ class User extends Authenticatable implements JWTSubject
             return null;
         }
 
-        // Handle stateless environments (like Cloud Run)
-        // If the file is missing from the disk, return null so frontend shows fallback icon
-        try {
-            if (\Illuminate\Support\Facades\Storage::disk('public')->exists($this->avatar)) {
-                return asset('storage/' . $this->avatar);
-            }
-        } catch (\Exception $e) {
-            // Log error if needed, but fall through to null for broken links
-        }
-
-        return null;
+        return asset('storage/' . $this->avatar);
     }
 
     /**

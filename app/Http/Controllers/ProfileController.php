@@ -11,8 +11,9 @@ class ProfileController extends Controller
 {
     public function updateAvatar(Request $request)
     {
+        $maxSize = $request->file('avatar')->getClientOriginalExtension() === 'gif' ? 2048 : 1024;
         $request->validate([
-            'avatar' => 'required|image|max:2048', // 2MB Max
+            'avatar' => "required|image|mimes:jpeg,png,jpg,gif|max:$maxSize",
         ]);
 
         $user = $request->user();

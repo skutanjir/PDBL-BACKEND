@@ -13,6 +13,12 @@ use Illuminate\Support\Facades\Route;
 Route::middleware('throttle:auth')->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
     Route::post('/login', [AuthController::class, 'login']);
+    Route::post('/auth/google', [AuthController::class, 'googleLogin']);
+    Route::post('/auth/verify-email', [AuthController::class, 'verifyEmail']);
+    Route::post('/auth/resend-verification', [AuthController::class, 'resendVerification']);
+    Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword']);
+    Route::post('/auth/verify-otp', [AuthController::class, 'verifyOtp']);
+    Route::post('/auth/reset-password', [AuthController::class, 'resetPassword']);
 });
 
 // Protected routes (Requires Auth)
@@ -29,7 +35,7 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     
     // Teams management
     Route::apiResource('teams', TeamController::class);
-    Route::middleware('throttle:20,1')->group(function () {
+    Route::middleware('throttle:10,1')->group(function () {
         Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
         
         // Profile
@@ -39,6 +45,7 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
         Route::post('profile/update', [ProfileController::class, 'updateProfile']);
     });
     
+    Route::post('/teams/{team}/avatar', [TeamController::class, 'updateAvatar']);
     Route::post('/teams/{team}/accept', [TeamController::class, 'acceptInvitation']);
     Route::post('/teams/{team}/decline', [TeamController::class, 'declineInvitation']);
     Route::delete('/teams/{team}/members/{user}', [TeamController::class, 'removeMember']);
