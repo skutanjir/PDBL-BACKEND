@@ -37,7 +37,8 @@ class User extends Authenticatable implements JWTSubject
             return null;
         }
 
-        return asset('storage/' . $this->avatar);
+        $bucket = config('filesystems.disks.gcs.bucket', 'pdbl-app-storage');
+        return "https://storage.googleapis.com/{$bucket}/{$this->avatar}";
     }
 
     /**

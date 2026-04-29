@@ -47,6 +47,16 @@ return [
             'report' => false,
         ],
 
+        'gcs' => [
+            'driver' => 'gcs',
+            'bucket' => env('GCS_BUCKET', 'pdbl-app-storage'),
+            'path_prefix' => '',
+            'url' => 'https://storage.googleapis.com/' . env('GCS_BUCKET', 'pdbl-app-storage'),
+            'visibility' => 'public',
+            'throw' => false,
+            'report' => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

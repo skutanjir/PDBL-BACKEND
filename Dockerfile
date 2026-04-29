@@ -7,6 +7,12 @@ RUN apt-get update && apt-get install -y \
 
 RUN docker-php-ext-install pdo_mysql pdo_pgsql pgsql mbstring exif pcntl bcmath gd zip
 
+RUN { \
+    echo 'upload_max_filesize = 10M'; \
+    echo 'post_max_size = 20M'; \
+    echo 'memory_limit = 256M'; \
+    } > /usr/local/etc/php/conf.d/uploads.ini
+
 # Fix MPM conflict - manually remove ALL mpm symlinks then enable only prefork
 RUN rm -f /etc/apache2/mods-enabled/mpm_*.load \
           /etc/apache2/mods-enabled/mpm_*.conf \

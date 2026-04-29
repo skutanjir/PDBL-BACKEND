@@ -11,25 +11,32 @@ class ProfileController extends Controller
 {
     public function updateAvatar(Request $request)
     {
-        $maxSize = $request->file('avatar')->getClientOriginalExtension() === 'gif' ? 2048 : 1024;
         $request->validate([
-            'avatar' => "required|image|mimes:jpeg,png,jpg,gif|max:$maxSize",
+            'avatar' => 'required|image|mimes:jpeg,png,jpg,gif|max:5120',
         ]);
 
         $user = $request->user();
 
-        // Delete old avatar if exists
         if ($user->avatar) {
-            Storage::disk('public')->delete($user->avatar);
+            Storage::disk('gcs')->delete($user->avatar);
         }
 
-        $path = $request->file('avatar')->store('avatars', 'public');
+        try {
+            $path = $request->file('avatar')->store('avatars', 'gcs');
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Failed to save avatar. Please try again.'], 500);
+        }
+
+        if (!$path) {
+            return response()->json(['message' => 'Failed to save avatar. Please try again.'], 500);
+        }
+
         $user->update(['avatar' => $path]);
 
         return response()->json([
             'message' => 'Avatar updated successfully',
-            'avatar_url' => asset('storage/' . $path),
-            'user' => $user
+            'avatar_url' => $user->fresh()->avatar_url,
+            'user' => $user->fresh(),
         ]);
     }
 

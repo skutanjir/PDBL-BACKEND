@@ -103,6 +103,62 @@ gcloud artifacts repositories add-iam-policy-binding laravel-app \
 
 ---
 
+## Update Existing Deployment (service sudah ada sebelumnya)
+
+Karena Firebase credentials JSON sekarang dikecualikan dari Docker image (dipindahkan ke Secret Manager),
+kamu perlu jalankan langkah berikut **sekali saja** sebelum deploy pertama kali dengan kode baru ini.
+
+### Step A — Buat GCS bucket (jika belum ada)
+
+```bash
+gcloud storage buckets create gs://pdbl-app-storage \
+  --location=asia-southeast2 \
+  --project=pdbl-backend
+```
+
+### Step B — Simpan Firebase credentials ke Secret Manager
+
+```bash
+gcloud secrets create firebase-credentials \a
+  --data-file="storage/app/teka-teki-simulator-firebase-adminsdk-4kn1x-b46b53d53d.json" \
+  --project=pdbl-backend
+```
+
+### Step C — Beri akses service account
+
+```bash
+PROJECT_NUMBER=$(gcloud projects describe pdbl-backend --format="value(projectNumber)")
+SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+
+gcloud storage buckets add-iam-policy-binding gs://pdbl-app-storage \
+  --member="serviceAccount:${SA}" --role="roles/storage.objectAdmin"
+
+gcloud projects add-iam-policy-binding pdbl-backend \
+  --member="serviceAccount:${SA}" --role="roles/secretmanager.secretAccessor"
+```
+
+### Step D — Build dan deploy dengan tambahan volume dan secret baru
+
+```bash
+gcloud builds submit \
+  --tag asia-southeast2-docker.pkg.dev/pdbl-backend/laravel-app/laravel:latest \
+  --project=pdbl-backend
+
+gcloud run deploy laravel-app \
+  --image=asia-southeast2-docker.pkg.dev/pdbl-backend/laravel-app/laravel:latest \
+  --region=asia-southeast2 \
+  --project=pdbl-backend \
+  --update-secrets=/run/secrets/firebase-credentials.json=firebase-credentials:latest \
+  --add-volume=name=gcs-storage,type=cloud-storage,bucket=pdbl-app-storage \
+  --add-volume-mount=volume=gcs-storage,mount-path=/var/www/html/storage/app/public
+```
+
+Env vars yang sudah ada di Cloud Run service tidak akan tersentuh — hanya menambahkan Firebase secret mount dan GCS volume.
+
+> **Note — GCS FUSE write permissions**: `uid=33:gid=33` makes the FUSE mount appear owned by `www-data` (Debian UID/GID 33), so Apache worker processes can write uploaded files. Without this, the mount is root-owned and PHP emits a permission-denied warning that Laravel converts to a 500 error.
+
+---
+
 ## First Deployment
 
 ### Step 1 — Build and push image to Artifact Registry
@@ -153,7 +209,7 @@ gcloud run deploy laravel-app \
   --set-env-vars=MAIL_FROM_ADDRESS=wudipdbl@gmail.com \
   --set-env-vars="MAIL_FROM_NAME=Wudi App" \
   --set-env-vars=FIREBASE_PROJECT_ID=teka-teki-simulator \
-  --set-env-vars=FIREBASE_CREDENTIALS=storage/app/firebase-credentials.json \
+  --set-env-vars=FIREBASE_CREDENTIALS=/run/secrets/firebase-credentials.json \
   --set-env-vars=JWT_ALGO=HS256 \
   --set-env-vars=JWT_REFRESH_TTL=40320 \
   --set-env-vars=AUTH_GUARD=api \
@@ -161,7 +217,7 @@ gcloud run deploy laravel-app \
   --update-secrets=JWT_SECRET=jwt-secret:latest \
   --update-secrets=DB_PASSWORD=db-password:latest \
   --update-secrets=MAIL_PASSWORD=mail-password:latest \
-  --update-secrets=/var/www/html/storage/app/firebase-credentials.json=firebase-credentials:latest \
+  --update-secrets=/run/secrets/firebase-credentials.json=firebase-credentials:latest \
   --add-volume=name=gcs-storage,type=cloud-storage,bucket=pdbl-app-storage \
   --add-volume-mount=volume=gcs-storage,mount-path=/var/www/html/storage/app/public
 ```

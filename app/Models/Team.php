@@ -15,7 +15,8 @@ class Team extends Model
     public function getAvatarUrlAttribute(): ?string
     {
         if (!$this->avatar) return null;
-        return asset('storage/' . $this->avatar);
+        $bucket = config('filesystems.disks.gcs.bucket', 'pdbl-app-storage');
+        return "https://storage.googleapis.com/{$bucket}/{$this->avatar}";
     }
 
     public function owner()

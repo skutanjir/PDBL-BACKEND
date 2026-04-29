@@ -314,21 +314,29 @@ class TeamController extends Controller
             return response()->json(['message' => 'Only the team owner can change the team photo'], 403);
         }
 
-        $maxSize = $request->file('avatar')->getClientOriginalExtension() === 'gif' ? 2048 : 1024;
         $request->validate([
-            'avatar' => "required|image|mimes:jpeg,png,jpg,webp,gif|max:$maxSize",
+            'avatar' => 'required|image|mimes:jpeg,png,jpg,webp,gif|max:5120',
         ]);
 
         if ($team->avatar) {
-            Storage::disk('public')->delete($team->avatar);
+            Storage::disk('gcs')->delete($team->avatar);
         }
 
-        $path = $request->file('avatar')->store('teams', 'public');
+        try {
+            $path = $request->file('avatar')->store('teams', 'gcs');
+        } catch (\Throwable $e) {
+            return response()->json(['message' => 'Failed to save team photo. Please try again.'], 500);
+        }
+
+        if (!$path) {
+            return response()->json(['message' => 'Failed to save team photo. Please try again.'], 500);
+        }
+
         $team->update(['avatar' => $path]);
 
         return response()->json([
             'message' => 'Team photo updated successfully',
-            'avatar_url' => $team->avatar_url,
+            'avatar_url' => $team->fresh()->avatar_url,
         ]);
     }
 
