@@ -10,8 +10,11 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use App\Mail\OtpMail;
 use App\Mail\VerificationMail;
+use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use PHPOpenSourceSaver\JWTAuth\Facades\JWTAuth;
 use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenBlacklistedException;
 
@@ -25,31 +28,35 @@ class AuthController extends Controller
             'password' => 'required|string|min:6|confirmed',
         ]);
 
-        $user = User::create([
-            'name'     => $request->name,
-            'email'    => $request->email,
-            'password' => Hash::make($request->password),
-            // email_verified_at intentionally null until OTP is confirmed
-        ]);
-
-        // Send email verification OTP
+        // Registration stays pending until the OTP is verified. Do not create
+        // a users row here, so unverified accounts never enter the users table.
         $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
-        PasswordOtp::where('email', $user->email)->delete();
-        PasswordOtp::create([
-            'email'      => $user->email,
-            'otp'        => $otp,
-            'type'       => 'email_verification',
-            'expires_at' => now()->addMinutes(30),
-        ]);
+        PasswordOtp::where('email', $request->email)
+            ->where('type', 'email_verification')
+            ->delete();
+
+        PasswordOtp::updateOrCreate(
+            [
+                'email' => $request->email,
+                'type'  => 'email_verification',
+            ],
+            [
+                'otp'              => $otp,
+                'pending_name'     => $request->name,
+                'pending_password' => Crypt::encryptString($request->password),
+                'expires_at'       => now()->addMinutes(30),
+            ]
+        );
+
         try {
-            Mail::to($user->email)->send(new VerificationMail($otp, $user->name));
+            Mail::to($request->email)->send(new VerificationMail($otp, $request->name));
         } catch (\Exception $e) {
-            Log::error('Failed to send verification email to ' . $user->email . ': ' . $e->getMessage());
+            Log::error('Failed to send verification email to ' . $request->email . ': ' . $e->getMessage());
         }
 
         return response()->json([
             'message' => 'Registration successful. Please check your email to verify your account.',
-            'email'   => $user->email,
+            'email'   => $request->email,
         ], 201);
     }
 
@@ -386,13 +393,43 @@ class AuthController extends Controller
             return response()->json(['status' => 'error', 'message' => 'Verification code has expired. Please request a new one.'], 422);
         }
 
-        $user = User::where('email', $request->email)->first();
-        if (!$user) {
-            return response()->json(['status' => 'error', 'message' => 'User not found.'], 404);
+        try {
+            $user = DB::transaction(function () use ($request, $record) {
+                $user = User::where('email', $request->email)->lockForUpdate()->first();
+
+                if ($user) {
+                    $user->update(['email_verified_at' => now()]);
+                    $record->delete();
+
+                    return $user;
+                }
+
+                if (!$record->pending_name || !$record->pending_password) {
+                    $record->delete();
+                    throw ValidationException::withMessages([
+                        'email' => ['Registration data has expired. Please register again.'],
+                    ]);
+                }
+
+                $user = User::create([
+                    'name'              => $record->pending_name,
+                    'email'             => $record->email,
+                    'password'          => Crypt::decryptString($record->pending_password),
+                    'email_verified_at' => now(),
+                ]);
+
+                $record->delete();
+
+                return $user;
+            });
+        } catch (DecryptException $e) {
+            $record->delete();
+            return response()->json([
+                'status'  => 'error',
+                'message' => 'Registration data is invalid. Please register again.',
+            ], 422);
         }
 
-        $user->update(['email_verified_at' => now()]);
-        $record->delete();
         Cache::forget($attemptKey);
 
         $token = JWTAuth::fromUser($user);
@@ -410,23 +447,33 @@ class AuthController extends Controller
         $request->validate(['email' => 'required|email|string']);
 
         $user = User::where('email', $request->email)->first();
-        if (!$user) {
+        $pendingRegistration = PasswordOtp::where('email', $request->email)
+            ->where('type', 'email_verification')
+            ->whereNotNull('pending_name')
+            ->whereNotNull('pending_password')
+            ->latest()
+            ->first();
+
+        if (!$user && !$pendingRegistration) {
             return response()->json(['status' => 'error', 'message' => 'Email not found.'], 404);
         }
 
-        if (!is_null($user->email_verified_at)) {
+        if ($user && !is_null($user->email_verified_at)) {
             return response()->json(['status' => 'success', 'message' => 'Email is already verified.']);
         }
 
         // Google users are auto-verified (Google already verified their email)
-        if (!is_null($user->google_id)) {
+        if ($user && !is_null($user->google_id)) {
             $user->update(['email_verified_at' => now()]);
             return response()->json(['status' => 'success', 'message' => 'Email verified via Google.']);
         }
 
+        $email = $user ? $user->email : $pendingRegistration->email;
+        $name = $user ? $user->name : $pendingRegistration->pending_name;
+
         // Rate limit: max 3 resends per 10 minutes per email
-        $countKey   = 'verify_resend_count:' . $user->email;
-        $cooldownKey = 'verify_resend_cooldown:' . $user->email;
+        $countKey   = 'verify_resend_count:' . $email;
+        $cooldownKey = 'verify_resend_cooldown:' . $email;
 
         if (Cache::has($cooldownKey)) {
             $seconds = Cache::get($cooldownKey);
@@ -450,14 +497,16 @@ class AuthController extends Controller
         Cache::put($cooldownKey, 60, now()->addSeconds(60));
 
         $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
-        PasswordOtp::where('email', $user->email)->where('type', 'email_verification')->delete();
+        PasswordOtp::where('email', $email)->where('type', 'email_verification')->delete();
         PasswordOtp::create([
-            'email'      => $user->email,
-            'otp'        => $otp,
-            'type'       => 'email_verification',
-            'expires_at' => now()->addMinutes(30),
+            'email'            => $email,
+            'otp'              => $otp,
+            'type'             => 'email_verification',
+            'pending_name'     => $pendingRegistration ? $pendingRegistration->pending_name : null,
+            'pending_password' => $pendingRegistration ? $pendingRegistration->pending_password : null,
+            'expires_at'       => now()->addMinutes(30),
         ]);
-        Mail::to($user->email)->send(new VerificationMail($otp, $user->name));
+        Mail::to($email)->send(new VerificationMail($otp, $name));
 
         return response()->json([
             'status'  => 'success',
