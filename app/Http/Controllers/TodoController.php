@@ -211,8 +211,8 @@ class TodoController extends Controller
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        $email          = strtolower(trim($user->email));
-        $assignedEmails = collect($todo->assigned_emails ?? [])->map(fn($e) => strtolower(trim($e)));
+        $email = $this->normalizeEmail($user->email);
+        $assignedEmails = $this->normalizeEmailList($todo->assigned_emails);
 
         // Load team to detect owner
         $todo->loadMissing('team');
@@ -231,8 +231,7 @@ class TodoController extends Controller
         }
 
         // Build updated completed_by list (deduplicated, lowercased)
-        $completedBy = collect($todo->completed_by ?? [])
-            ->map(fn($e) => strtolower(trim((string)$e)))
+        $completedBy = $this->normalizeEmailList($todo->completed_by)
             ->unique()
             ->values();
 
@@ -280,6 +279,35 @@ class TodoController extends Controller
             'total_assigned'     => $totalAssigned,
             'is_fully_completed' => $isFullyCompleted,
         ]);
+    }
+
+    private function normalizeEmailList($value)
+    {
+        if (is_string($value)) {
+            $decoded = json_decode($value, true);
+            $value = json_last_error() === JSON_ERROR_NONE ? $decoded : explode(',', $value);
+        }
+
+        return collect($value ?? [])
+            ->map(function ($entry) {
+                if (is_array($entry)) {
+                    $entry = $entry['email'] ?? $entry['value'] ?? $entry['address'] ?? '';
+                }
+
+                if (is_object($entry)) {
+                    $entry = $entry->email ?? $entry->value ?? $entry->address ?? '';
+                }
+
+                return $this->normalizeEmail((string) $entry);
+            })
+            ->filter()
+            ->unique()
+            ->values();
+    }
+
+    private function normalizeEmail(string $email): string
+    {
+        return strtolower(trim($email));
     }
 
     /**

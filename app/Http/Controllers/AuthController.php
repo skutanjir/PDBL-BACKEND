@@ -24,35 +24,48 @@ class AuthController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users',
+            'email' => 'required|string|email|max:255',
             'password' => 'required|string|min:6|confirmed',
         ]);
+
+        $existingUser = User::where('email', $request->email)->first();
+        if ($existingUser && !is_null($existingUser->email_verified_at)) {
+            throw ValidationException::withMessages([
+                'email' => ['The email has already been taken.'],
+            ]);
+        }
+
+        if ($existingUser && !is_null($existingUser->google_id)) {
+            throw ValidationException::withMessages([
+                'email' => ['This email is already registered with Google Sign-In. Please use the "Continue with Google" button.'],
+            ]);
+        }
 
         // Registration stays pending until the OTP is verified. Do not create
         // a users row here, so unverified accounts never enter the users table.
         $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
-        PasswordOtp::where('email', $request->email)
-            ->where('type', 'email_verification')
-            ->delete();
 
-        PasswordOtp::updateOrCreate(
-            [
-                'email' => $request->email,
-                'type'  => 'email_verification',
-            ],
-            [
+        DB::transaction(function () use ($request, $existingUser, $otp) {
+            // Clean up legacy rows created by the old register-before-verify flow.
+            if ($existingUser && is_null($existingUser->email_verified_at)) {
+                $existingUser->delete();
+            }
+
+            PasswordOtp::where('email', $request->email)
+                ->where('type', 'email_verification')
+                ->delete();
+
+            PasswordOtp::create([
+                'email'            => $request->email,
                 'otp'              => $otp,
+                'type'             => 'email_verification',
                 'pending_name'     => $request->name,
                 'pending_password' => Crypt::encryptString($request->password),
                 'expires_at'       => now()->addMinutes(30),
-            ]
-        );
+            ]);
+        });
 
-        try {
-            Mail::to($request->email)->send(new VerificationMail($otp, $request->name));
-        } catch (\Exception $e) {
-            Log::error('Failed to send verification email to ' . $request->email . ': ' . $e->getMessage());
-        }
+        $this->sendVerificationMailAfterResponse($request->email, $otp, $request->name);
 
         return response()->json([
             'message' => 'Registration successful. Please check your email to verify your account.',
@@ -80,10 +93,50 @@ class AuthController extends Controller
 
         // Account exists but email not verified yet — return special 403
         if ($existingUser && is_null($existingUser->email_verified_at)) {
+            if (!Hash::check($request->password, $existingUser->password)) {
+                throw ValidationException::withMessages([
+                    'email' => ['Invalid email or password.'],
+                ]);
+            }
+
+            $this->refreshVerificationOtp($existingUser->email, $existingUser->name);
+
             return response()->json([
                 'status'  => 'email_not_verified',
-                'message' => 'Please verify your email address before logging in.',
+                'message' => 'Please verify your email address before logging in. We sent a new verification code.',
                 'email'   => $existingUser->email,
+            ], 403);
+        }
+
+        $pendingRegistration = PasswordOtp::where('email', $request->email)
+            ->where('type', 'email_verification')
+            ->whereNotNull('pending_name')
+            ->whereNotNull('pending_password')
+            ->latest()
+            ->first();
+
+        if (!$existingUser && $pendingRegistration) {
+            try {
+                $pendingPassword = Crypt::decryptString($pendingRegistration->pending_password);
+            } catch (DecryptException $e) {
+                $pendingRegistration->delete();
+                throw ValidationException::withMessages([
+                    'email' => ['Registration data is invalid. Please register again.'],
+                ]);
+            }
+
+            if (!hash_equals($pendingPassword, $request->password)) {
+                throw ValidationException::withMessages([
+                    'email' => ['Invalid email or password.'],
+                ]);
+            }
+
+            $this->refreshVerificationOtp($pendingRegistration->email, $pendingRegistration->pending_name, $pendingRegistration);
+
+            return response()->json([
+                'status'  => 'email_not_verified',
+                'message' => 'Please verify your email address before logging in. We sent a new verification code.',
+                'email'   => $pendingRegistration->email,
             ], 403);
         }
 
@@ -506,7 +559,7 @@ class AuthController extends Controller
             'pending_password' => $pendingRegistration ? $pendingRegistration->pending_password : null,
             'expires_at'       => now()->addMinutes(30),
         ]);
-        Mail::to($email)->send(new VerificationMail($otp, $name));
+        $this->sendVerificationMailAfterResponse($email, $otp, $name);
 
         return response()->json([
             'status'  => 'success',
@@ -662,5 +715,36 @@ class AuthController extends Controller
             'status'  => 'success',
             'message' => 'Password updated successfully. Please log in.',
         ]);
+    }
+
+    private function sendVerificationMailAfterResponse(string $email, string $otp, string $name): void
+    {
+        app()->terminating(function () use ($email, $otp, $name) {
+            try {
+                Mail::to($email)->send(new VerificationMail($otp, $name));
+            } catch (\Exception $e) {
+                Log::error('Failed to send verification email to ' . $email . ': ' . $e->getMessage());
+            }
+        });
+    }
+
+    private function refreshVerificationOtp(string $email, string $name, ?PasswordOtp $pendingRegistration = null): void
+    {
+        $otp = str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+
+        PasswordOtp::where('email', $email)
+            ->where('type', 'email_verification')
+            ->delete();
+
+        PasswordOtp::create([
+            'email'            => $email,
+            'otp'              => $otp,
+            'type'             => 'email_verification',
+            'pending_name'     => $pendingRegistration ? $pendingRegistration->pending_name : null,
+            'pending_password' => $pendingRegistration ? $pendingRegistration->pending_password : null,
+            'expires_at'       => now()->addMinutes(30),
+        ]);
+
+        $this->sendVerificationMailAfterResponse($email, $otp, $name);
     }
 }
