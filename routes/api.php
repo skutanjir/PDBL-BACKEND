@@ -5,6 +5,7 @@ use App\Http\Controllers\TodoController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\TeamController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ChatController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -58,6 +59,14 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     Route::post('notifications/read-all', [NotificationController::class, 'markAllAsRead']);
     Route::post('notifications/{notification}/read', [NotificationController::class, 'markAsRead']);
     Route::delete('notifications/{notification}', [NotificationController::class, 'destroy']);
+
+    // Chat
+    Route::middleware('throttle:60,1')->group(function () {
+        Route::get('chat/conversations', [ChatController::class, 'conversations']);
+        Route::get('chat/conversations/{conversation}/messages', [ChatController::class, 'messages']);
+        Route::post('chat/conversations/{conversation}/messages', [ChatController::class, 'send']);
+        Route::post('chat/private/{user}', [ChatController::class, 'startPrivate']);
+    });
 
     // Notification Settings
     Route::get('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'index']);

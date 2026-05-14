@@ -11,6 +11,72 @@ use Kreait\Firebase\Messaging\AndroidConfig;
 
 class FirebaseService
 {
+    private static function firebaseFactory(): ?Factory
+    {
+        $credPath = env('FIREBASE_CREDENTIALS');
+
+        $fullPath = null;
+        if ($credPath) {
+            $possiblePaths = [
+                base_path($credPath),
+                storage_path('app/' . basename($credPath)),
+                $credPath,
+            ];
+
+            foreach ($possiblePaths as $path) {
+                if (file_exists($path)) {
+                    $fullPath = realpath($path);
+                    break;
+                }
+            }
+        }
+
+        if (!$fullPath) {
+            $files = glob(storage_path('app/teka-teki-*.json'));
+            if (!empty($files)) {
+                $fullPath = $files[0];
+            }
+        }
+
+        if (!$fullPath) {
+            return null;
+        }
+
+        $factory = (new Factory)->withServiceAccount($fullPath);
+        $projectId = config('services.firebase.project_id') ?? env('FIREBASE_PROJECT_ID');
+        if ($projectId) {
+            $factory = $factory->withProjectId($projectId);
+        }
+
+        return $factory;
+    }
+
+    public static function createCustomToken(?User $user): ?string
+    {
+        if (!$user) {
+            return null;
+        }
+
+        try {
+            $factory = self::firebaseFactory();
+            if (!$factory) {
+                Log::warning('Firebase custom token skipped: credentials not found.');
+                return null;
+            }
+
+            $auth = $factory->createAuth();
+            $token = $auth->createCustomToken((string) $user->id, array_filter([
+                'name' => $user->name,
+                'email' => $user->email,
+            ]));
+
+            return $token->toString();
+        } catch (\Throwable $e) {
+            Log::warning('Firebase custom token generation failed: ' . $e->getMessage());
+            return null;
+        }
+    }
+
     /**
      * Send a push notification to a specific user.
      *
@@ -41,40 +107,11 @@ class FirebaseService
 
         // 2. Send real-time push via FCM HTTP v1
         try {
-            $credPath = env('FIREBASE_CREDENTIALS');
-            
-            // Robust path resolution
-            $fullPath = null;
-            if ($credPath) {
-                $possiblePaths = [
-                    base_path($credPath),
-                    storage_path('app/' . basename($credPath)),
-                    $credPath // Absolute path fallback
-                ];
-                
-                foreach ($possiblePaths as $path) {
-                    if (file_exists($path)) {
-                        $fullPath = realpath($path);
-                        break;
-                    }
-                }
-            }
-
-            if (!$fullPath) {
-                // Last ditch effort: search for any json file in storage/app starting with 'teka-teki'
-                $files = glob(storage_path('app/teka-teki-*.json'));
-                if (!empty($files)) {
-                    $fullPath = $files[0];
-                }
-            }
-
-            if (!$fullPath) {
+            $factory = self::firebaseFactory();
+            if (!$factory) {
                 throw new \Exception("FIREBASE_CREDENTIALS file not found. Check .env or storage/app/");
             }
 
-            // Credential path resolved
-            $factory = (new Factory)
-                ->withServiceAccount($fullPath);
             $messaging = $factory->createMessaging();
 
             $message = CloudMessage::withTarget('token', $user->fcm_token)

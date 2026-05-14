@@ -74,6 +74,11 @@ class User extends Authenticatable implements JWTSubject
         return $this->belongsToMany(Team::class)->withPivot('status')->withTimestamps();
     }
 
+    public function chatConversations()
+    {
+        return $this->belongsToMany(ChatConversation::class)->withPivot('last_read_at')->withTimestamps();
+    }
+
     public function ownedTeams()
     {
         return $this->hasMany(Team::class, 'created_by');

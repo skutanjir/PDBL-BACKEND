@@ -41,7 +41,7 @@ chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache 2>/dev/null || 
 
 # Optimize Laravel (jangan exit kalau gagal)
 php artisan config:cache || true
-php artisan route:cache || true
+php artisan route:clear || true
 php artisan view:cache || true
 
 # Migrate dengan retry

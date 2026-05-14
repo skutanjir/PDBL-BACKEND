@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\User;
 use App\Models\PasswordOtp;
+use App\Services\FirebaseService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
@@ -161,6 +162,7 @@ class AuthController extends Controller
             'message' => 'Login successful',
             'user' => $user,
             'token' => $token,
+            'firebase_custom_token' => FirebaseService::createCustomToken($user),
         ]);
     }
 
@@ -180,7 +182,10 @@ class AuthController extends Controller
                 ->update(['user_id' => $user->id, 'device_id' => null]);
         }
 
-        return response()->json($user);
+        $userData = $user->toArray();
+        $userData['firebase_custom_token'] = FirebaseService::createCustomToken($user);
+
+        return response()->json($userData);
     }
 
     public function logout(Request $request)
@@ -248,6 +253,7 @@ class AuthController extends Controller
                             'status' => 'success',
                             'message' => 'Token (cached) successfully updated',
                             'token' => $cachedToken,
+                            'firebase_custom_token' => FirebaseService::createCustomToken(auth('api')->user()),
                         ]);
                     }
                 } catch (TokenBlacklistedException $e) {
@@ -270,6 +276,7 @@ class AuthController extends Controller
                             'status' => 'success',
                             'message' => 'Token (cached) successfully updated',
                             'token' => $cachedToken,
+                            'firebase_custom_token' => FirebaseService::createCustomToken(auth('api')->user()),
                         ]);
                     }
                     throw $e; // Re-throw if not in cache
@@ -297,6 +304,7 @@ class AuthController extends Controller
                 'status' => 'success',
                 'message' => 'Token successfully updated',
                 'token' => $newToken,
+                'firebase_custom_token' => FirebaseService::createCustomToken($user),
             ]);
         } catch (TokenBlacklistedException $e) {
             Log::warning('Refresh failed: Token already blacklisted and no cache record found.');
@@ -407,6 +415,7 @@ class AuthController extends Controller
             'message'           => 'Google login successful',
             'user'              => $user,
             'token'             => $token,
+            'firebase_custom_token' => FirebaseService::createCustomToken($user),
             'account_converted' => $accountConverted,
         ]);
     }
