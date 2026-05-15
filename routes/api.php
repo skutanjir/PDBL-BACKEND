@@ -36,15 +36,13 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     
     // Teams management
     Route::apiResource('teams', TeamController::class);
-    Route::middleware('throttle:10,1')->group(function () {
-        Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
-        
-        // Profile
-        Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
-        Route::post('profile/password', [ProfileController::class, 'updatePassword']);
-        Route::post('profile/email', [ProfileController::class, 'updateEmail']);
-        Route::post('profile/update', [ProfileController::class, 'updateProfile']);
-    });
+    Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
+    
+    // Profile
+    Route::post('profile/avatar', [ProfileController::class, 'updateAvatar']);
+    Route::post('profile/password', [ProfileController::class, 'updatePassword']);
+    Route::post('profile/email', [ProfileController::class, 'updateEmail']);
+    Route::post('profile/update', [ProfileController::class, 'updateProfile']);
     
     Route::post('/teams/{team}/avatar', [TeamController::class, 'updateAvatar']);
     Route::post('/teams/{team}/accept', [TeamController::class, 'acceptInvitation']);
@@ -61,12 +59,11 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     Route::delete('notifications/{notification}', [NotificationController::class, 'destroy']);
 
     // Chat
-    Route::middleware('throttle:60,1')->group(function () {
-        Route::get('chat/conversations', [ChatController::class, 'conversations']);
-        Route::get('chat/conversations/{conversation}/messages', [ChatController::class, 'messages']);
-        Route::post('chat/conversations/{conversation}/messages', [ChatController::class, 'send']);
-        Route::post('chat/private/{user}', [ChatController::class, 'startPrivate']);
-    });
+    Route::get('chat/conversations', [ChatController::class, 'conversations']);
+    Route::get('chat/conversations/{conversation}/messages', [ChatController::class, 'messages']);
+    Route::post('chat/conversations/{conversation}/read', [ChatController::class, 'markRead']);
+    Route::post('chat/conversations/{conversation}/messages', [ChatController::class, 'send']);
+    Route::post('chat/private/{user}', [ChatController::class, 'startPrivate']);
 
     // Notification Settings
     Route::get('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'index']);

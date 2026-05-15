@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\ChatConversation;
 use App\Models\Team;
 use App\Models\User;
+use App\Jobs\SendPushNotification;
 use Illuminate\Http\Request;
 
 class ChatController extends Controller
@@ -20,16 +21,22 @@ class ChatController extends Controller
             }])
             ->get();
 
-        $teamConversations = $teams->map(function (Team $team) {
+        $teamConversations = $teams->map(function (Team $team) use ($user) {
             $conversation = ChatConversation::firstOrCreate([
                 'type' => 'team',
                 'team_id' => $team->id,
             ]);
 
+            $conversation->participants()->syncWithoutDetaching(
+                $team->members->pluck('id')->all()
+            );
+
             $lastMessage = $conversation->messages()
                 ->with('sender:id,name,avatar')
                 ->latest()
                 ->first();
+
+            $unreadCount = $this->getUnreadCount($conversation, $user);
 
             return [
                 'id' => $conversation->id,
@@ -49,6 +56,7 @@ class ChatController extends Controller
                     'created_at' => $lastMessage->created_at?->toIso8601String(),
                 ] : null,
                 'updated_at' => ($lastMessage?->created_at ?? $conversation->updated_at)?->toIso8601String(),
+                'unread_count' => $unreadCount,
             ];
         });
 
@@ -62,6 +70,7 @@ class ChatController extends Controller
                     ->with('sender:id,name,avatar')
                     ->latest()
                     ->first();
+                $unreadCount = $this->getUnreadCount($conversation, $user);
 
                 return [
                     'id' => $conversation->id,
@@ -81,6 +90,7 @@ class ChatController extends Controller
                         'created_at' => $lastMessage->created_at?->toIso8601String(),
                     ] : null,
                     'updated_at' => ($lastMessage?->created_at ?? $conversation->updated_at)?->toIso8601String(),
+                    'unread_count' => $unreadCount,
                 ];
             });
 
@@ -89,6 +99,23 @@ class ChatController extends Controller
             ->values();
 
         return response()->json(['conversations' => $conversations]);
+    }
+
+    public function markRead(ChatConversation $conversation)
+    {
+        $user = auth('api')->user();
+
+        if ($conversation->type === 'team') {
+            $this->authorizeConversation($conversation);
+        } elseif (!$this->authorizePersonalConversation($conversation)) {
+            abort(403, 'Unauthorized');
+        }
+
+        $conversation->participants()->syncWithoutDetaching([
+            $user->id => ['last_read_at' => now()],
+        ]);
+
+        return response()->json(['message' => 'Conversation marked as read']);
     }
 
     public function messages(ChatConversation $conversation)
@@ -120,15 +147,6 @@ class ChatController extends Controller
             abort(403, 'Unauthorized');
         }
 
-        $lastMessage = $conversation->messages()
-            ->where('sender_id', $user->id)
-            ->latest()
-            ->first();
-
-        if ($lastMessage && $lastMessage->created_at->diffInSeconds(now()) < 3) {
-            return response()->json(['message' => 'Slow down. Please wait before sending another message.'], 429);
-        }
-
         $data = $request->validate([
             'body' => 'required|string|max:2000',
         ]);
@@ -157,6 +175,39 @@ class ChatController extends Controller
 
         $conversation->touch();
 
+        $conversation->participants()->syncWithoutDetaching([
+            $user->id => ['last_read_at' => now()],
+        ]);
+
+        // Dispatch FCM notifications
+        $title = $team ? $team->name : $user->name;
+        $notificationBody = $body;
+
+        if ($team) {
+            $recipients = $team->members()->where('user_id', '!=', $user->id)->wherePivot('status', 'accepted')->get();
+        } else {
+            $recipients = $conversation->participants()->where('user_id', '!=', $user->id)->get();
+        }
+
+        foreach ($recipients as $recipient) {
+            SendPushNotification::dispatch(
+                $recipient,
+                $title,
+                $notificationBody,
+                [
+                    'conversation_id' => (string)$conversation->id,
+                    'type' => 'chat',
+                    'chat_type' => $conversation->type,
+                    'conversation_type' => $conversation->type,
+                    'team_id' => (string)($conversation->team_id ?? ''),
+                    'sender_id' => (string)$user->id,
+                    'sender_name' => $user->name,
+                    'conversation_name' => $title,
+                    'body' => $body,
+                ]
+            );
+        }
+
         return response()->json(['message' => $this->formatMessage($message)], 201);
     }
 
@@ -175,7 +226,10 @@ class ChatController extends Controller
 
         if (!$conversation) {
             $conversation = ChatConversation::create(['type' => 'personal']);
-            $conversation->participants()->attach([$currentUser->id, $user->id]);
+            $conversation->participants()->attach([
+                $currentUser->id => ['last_read_at' => now()],
+                $user->id => ['last_read_at' => null],
+            ]);
         }
 
         $conversation->load('participants');
@@ -195,8 +249,23 @@ class ChatController extends Controller
                 ])->values(),
                 'last_message' => null,
                 'updated_at' => $conversation->updated_at?->toIso8601String(),
+                'unread_count' => $this->getUnreadCount($conversation, $currentUser),
             ],
         ]);
+    }
+
+    private function getUnreadCount(ChatConversation $conversation, User $user): int
+    {
+        $pivot = $conversation->participants()
+            ->where('user_id', $user->id)
+            ->first()?->pivot;
+
+        $lastReadAt = $pivot?->last_read_at;
+
+        return $conversation->messages()
+            ->where('sender_id', '!=', $user->id)
+            ->when($lastReadAt, fn ($query) => $query->where('created_at', '>', $lastReadAt))
+            ->count();
     }
 
     private function authorizeConversation(ChatConversation $conversation): Team

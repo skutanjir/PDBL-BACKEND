@@ -213,6 +213,7 @@ class TodoController extends Controller
 
         $email = $this->normalizeEmail($user->email);
         $assignedEmails = $this->normalizeEmailList($todo->assigned_emails);
+        $targetEmail = $this->normalizeEmail((string) $request->input('target_email', ''));
 
         // Load team to detect owner
         $todo->loadMissing('team');
@@ -222,6 +223,16 @@ class TodoController extends Controller
         // Only owner or explicitly assigned members may toggle
         if (!$isOwner && !$isAssigned) {
             return response()->json(['message' => 'Only the owner or assigned members can toggle this task'], 403);
+        }
+
+        if ($targetEmail !== '') {
+            if (!$isOwner) {
+                return response()->json(['message' => 'Only the owner can toggle another member task'], 403);
+            }
+
+            if (!$assignedEmails->contains($targetEmail)) {
+                return response()->json(['message' => 'Target member is not assigned to this task'], 422);
+            }
         }
 
         $totalAssigned = $assignedEmails->count();
@@ -235,8 +246,11 @@ class TodoController extends Controller
             ->unique()
             ->values();
 
-        // ?force=true allows owner to force-complete even when they are in the assigned list
-        $forceToggle = $isOwner && ($request->boolean('force') || !$isAssigned);
+        $toggleEmail = $targetEmail !== '' ? $targetEmail : $email;
+
+        // ?force=true allows owner to force-complete even when they are in the assigned list.
+        // target_email is used by Member Detail so owner can toggle one assigned member only.
+        $forceToggle = $isOwner && $targetEmail === '' && ($request->boolean('force') || !$isAssigned);
 
         if ($forceToggle) {
             // Owner force-toggle ALL assigned members
@@ -255,11 +269,11 @@ class TodoController extends Controller
                 $totalCompleted   = $totalAssigned;
             }
         } else {
-            // Regular assigned member (or owner toggling own entry on the main task list) → toggle own entry only
-            if ($completedBy->contains($email)) {
-                $completedBy = $completedBy->reject(fn($e) => $e === $email)->values();
+            // Regular assigned member toggles own entry; owner with target_email toggles that member entry.
+            if ($completedBy->contains($toggleEmail)) {
+                $completedBy = $completedBy->reject(fn($e) => $e === $toggleEmail)->values();
             } else {
-                $completedBy->push($email);
+                $completedBy->push($toggleEmail);
             }
 
             $completedByArray = $completedBy->values()->all();
