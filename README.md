@@ -22,6 +22,7 @@ REST API backend for the WUDI task management platform. Built with Laravel 12 an
   - [Team Collaboration](#4-team-collaboration)
   - [Notifications](#5-notifications)
   - [Notification Settings](#6-notification-settings)
+  - [Chat](#7-chat)
 - [Database Schema](#database-schema)
 - [Middleware](#middleware)
 - [Scheduled Commands](#scheduled-commands)
@@ -41,6 +42,7 @@ REST API backend for the WUDI task management platform. Built with Laravel 12 an
 - **Task Management** -- CRUD with deadlines, priority levels (high/medium/low), completion tracking, pagination, and bulk sync for offline-first clients.
 - **Team Collaboration** -- Create teams with avatar, deadline, and max member limits. Invite members by email, accept or decline invitations, remove or ban members. Owner-based permission model.
 - **Team Task Completion** -- Per-member completion tracking via `completed_by` array. A task is marked complete only when all assigned members have individually checked it.
+- **Chat System** -- Personal and team conversations with message history, read state, replies, editing, soft deletion, mention parsing, duplicate-send protection, and FCM notification fan-out.
 - **Push Notifications** -- Firebase Cloud Messaging (FCM HTTP v1) with queued delivery via Laravel Jobs. Notifications for team invitations, member removals, and deadline reminders.
 - **In-App Notifications** -- Persistent notification records with read/unread state, mark-as-read, and bulk mark-all-as-read.
 - **Notification Settings** -- Per-user configuration for reminder days, reminder time, vibration, and remote alert toggles.
@@ -92,6 +94,7 @@ Client Request
 - Idempotent token refresh using JTI-based cache to prevent 401 storms from concurrent requests
 - Queued push notifications to avoid blocking API responses
 - Per-member completion tracking on team tasks using JSON arrays (assigned_emails, completed_by)
+- Chat data is normalized through conversations, messages, participants, and per-user deletion records to support private and team discussion flows
 
 ---
 
@@ -109,6 +112,7 @@ PDBL-BACKEND/
 |   |   |   |-- AuthController.php         # Register, login, logout, refresh, FCM token, email check
 |   |   |   |-- TodoController.php         # CRUD, toggle member, bulk store
 |   |   |   |-- TeamController.php         # CRUD, invite, accept/decline, remove member
+|   |   |   |-- ChatController.php         # Conversations, messages, replies, edits, deletion
 |   |   |   |-- ProfileController.php      # Avatar, password, email, name updates
 |   |   |   |-- NotificationController.php # List, mark read, mark all read, delete
 |   |   |   |-- UserNotificationSettingController.php  # Get/update reminder settings
@@ -123,6 +127,8 @@ PDBL-BACKEND/
 |   |   |-- Team.php                       # Team with owner, members (pivot), todos
 |   |   |-- Notification.php               # In-app notification with type and read state
 |   |   |-- UserNotificationSetting.php    # Per-user reminder configuration
+|   |   |-- ChatConversation.php           # Personal and team chat conversation model
+|   |   |-- ChatMessage.php                # Chat message body, sender, reply, mention metadata
 |   |-- Providers/
 |   |   |-- AppServiceProvider.php
 |   |-- Services/
@@ -133,7 +139,7 @@ PDBL-BACKEND/
 |   |-- jwt.php                            # JWT configuration (algorithm, TTL, blacklist)
 |   |-- database.php, auth.php, queue.php  # Standard Laravel config
 |-- database/
-|   |-- migrations/                        # 18 migration files (see Database Schema)
+|   |-- migrations/                        # Schema history including auth, tasks, teams, notifications, and chat
 |   |-- factories/
 |   |-- seeders/
 |-- routes/
@@ -429,6 +435,30 @@ Guest endpoints accept `X-Device-ID: <uuid>` header as alternative.
 
 `reminder_days` values: `0` = on deadline day, `1` = 1 day before, `2` = 2 days before, etc.
 
+
+### 7. Chat
+
+| Method | Endpoint                                             | Auth   | Description                                      |
+|--------|------------------------------------------------------|--------|--------------------------------------------------|
+| GET    | `/chat/conversations`                                | Bearer | List personal and team conversations             |
+| GET    | `/chat/conversations/{conversation}/messages`        | Bearer | List latest visible messages for a conversation  |
+| POST   | `/chat/conversations/{conversation}/read`            | Bearer | Mark a conversation as read                      |
+| POST   | `/chat/conversations/{conversation}/messages`        | Bearer | Send a message, optionally as a reply            |
+| PATCH  | `/chat/conversations/{conversation}/messages/{id}`   | Bearer | Edit the sender's message within the edit window |
+| DELETE | `/chat/conversations/{conversation}/messages/{id}`   | Bearer | Delete message for self or, when allowed, all    |
+| POST   | `/chat/private/{user}`                               | Bearer | Start or retrieve a private conversation         |
+
+**Send Message Payload:**
+```json
+{
+  "body": "Hello team",
+  "reply_to_id": null,
+  "client_nonce": "unique-client-generated-id"
+}
+```
+
+**Chat Behavior:** Messages support replies, mention detection (`@name` and `@all`), duplicate-send protection via `client_nonce`, per-conversation cooldown, read timestamps per participant, and user-scoped deletion records. Team conversations are authorized through accepted team membership; personal conversations are authorized through participant membership.
+
 ---
 
 ## Database Schema
@@ -443,6 +473,10 @@ User (1) ---> (*) PasswordOtp
 User (*) <--> (*) Team [pivot: team_user with status]
 Team (1) ---> (*) Todo
 Team (1) ---> (1) User [owner via created_by]
+ChatConversation (1) ---> (*) ChatMessage
+ChatConversation (*) <--> (*) User [pivot: chat_conversation_user with last_read_at]
+ChatMessage (*) ---> (1) User [sender]
+ChatMessage (*) ---> (0..1) ChatMessage [reply_to]
 ```
 
 ### Migration Timeline
@@ -477,6 +511,10 @@ Team (1) ---> (1) User [owner via created_by]
 | `add_max_members_to_teams_table`                      | Maximum allowed member count per team          |
 | `add_performance_indexes_to_todos` (v1, v2)           | Database indexes for query optimization        |
 | `add_today_target_to_users_table`                     | Daily task target setting                      |
+| `create_chat_conversations_table`                     | Personal and team conversation records         |
+| `create_chat_messages_table`                          | Chat message body, sender, reply, mentions     |
+| `create_chat_conversation_user_table`                 | Conversation participants and read timestamps  |
+| `extend_chat_messages_for_actions`                    | Message edit/delete and action metadata        |
 
 ---
 
@@ -487,7 +525,7 @@ Team (1) ---> (1) User [owner via created_by]
 | `ForceGzipResponse`   | API   | Compresses JSON responses larger than 1KB using gzip level 6       |
 | `SyncTimezone`         | API   | Reads X-Timezone header and persists to user profile               |
 | `throttle:auth`        | Auth  | Rate limiting on register/login/refresh endpoints                  |
-| `throttle:api`         | API   | Rate limiting on general API endpoints                             |
+| `throttle:api`         | API   | Rate limiting on general API endpoints, including chat polling      |
 | `throttle:20,1`        | API   | Stricter rate limit (20 requests/minute) on sensitive operations   |
 
 ---
@@ -504,7 +542,7 @@ Team (1) ---> (1) User [owner via created_by]
 
 | Job                     | Trigger                          | Description                           |
 |-------------------------|----------------------------------|---------------------------------------|
-| `SendPushNotification`  | Team invite, member removal      | Sends FCM push notification via FirebaseService. Retryable on failure. |
+| `SendPushNotification`  | Team invite, member removal, chat messages | Sends FCM push notification via FirebaseService. Retryable on failure. |
 
 ---
 

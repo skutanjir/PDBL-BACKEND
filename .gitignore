@@ -6,18 +6,23 @@ Thumbs.db
 # Environment and sensitive data
 .env
 .env.*
+!.env.example
 auth.json
 
 # Credentials and private keys
 *.p12
 *.pem
 *.key
+*.crt
+*.csr
 *firebase-adminsdk*.json
 *service-account*.json
+google-credentials.json
 
 # IDE/Tools
 .phpactor.json
 .phpunit.result.cache
+/.cache
 /.fleet
 /.idea
 /.nova
@@ -31,22 +36,32 @@ auth.json
 /public/build
 /public/hot
 /public/storage
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Storage and temporary files
 /storage/*.key
 /storage/pail
 /storage/framework/cache/data/
+/storage/framework/testing/
 /storage/framework/views/*.php
 /storage/framework/sessions/*
+/storage/framework/testing/*
 /storage/logs/*.log
 
 # Project-specific temporary exports
 routes.txt
 routes_utf8.txt
 indexes_v2.php
+php.log
+npm.log
+*.tmp
+*.bak
 
 # Docker local overrides
 docker-compose.override.yml
+.docker/local/
 
 # Local development
 Homestead.json
@@ -56,3 +71,5 @@ public/storage/*
 
 # Deployment guide contains real credentials — never commit
 upload.md
+
+/deploy.sh

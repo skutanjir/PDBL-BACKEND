@@ -63,6 +63,8 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     Route::get('chat/conversations/{conversation}/messages', [ChatController::class, 'messages']);
     Route::post('chat/conversations/{conversation}/read', [ChatController::class, 'markRead']);
     Route::post('chat/conversations/{conversation}/messages', [ChatController::class, 'send']);
+    Route::patch('chat/conversations/{conversation}/messages/{message}', [ChatController::class, 'editMessage']);
+    Route::delete('chat/conversations/{conversation}/messages/{message}', [ChatController::class, 'deleteMessage']);
     Route::post('chat/private/{user}', [ChatController::class, 'startPrivate']);
 
     // Notification Settings

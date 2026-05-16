@@ -3,23 +3,33 @@
 namespace App\Http\Controllers;
 
 use App\Models\ChatConversation;
+use App\Models\ChatMessage;
 use App\Models\Team;
 use App\Models\User;
 use App\Jobs\SendPushNotification;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ChatController extends Controller
 {
+    private const MESSAGE_MAX_LENGTH = 2000;
+    private const MESSAGE_EDIT_MINUTES = 15;
+    private const MESSAGE_DELETE_MINUTES = 60;
+    private const MAX_MENTIONS = 10;
+    private const SEND_COOLDOWN_SECONDS = 1;
+
     public function conversations(Request $request)
     {
         $user = auth('api')->user();
 
-        $teams = $user->teams()
+        $teams = Cache::remember("chat:user:{$user->id}:teams", now()->addSeconds(30), fn () => $user->teams()
             ->wherePivot('status', 'accepted')
             ->with(['members' => function ($query) {
                 $query->wherePivot('status', 'accepted');
             }])
-            ->get();
+            ->get());
 
         $teamConversations = $teams->map(function (Team $team) use ($user) {
             $conversation = ChatConversation::firstOrCreate([
@@ -31,10 +41,10 @@ class ChatController extends Controller
                 $team->members->pluck('id')->all()
             );
 
-            $lastMessage = $conversation->messages()
+            $lastMessage = Cache::remember("chat:conversation:{$conversation->id}:last_message", now()->addSeconds(20), fn () => $conversation->messages()
                 ->with('sender:id,name,avatar')
                 ->latest()
-                ->first();
+                ->first());
 
             $unreadCount = $this->getUnreadCount($conversation, $user);
 
@@ -44,6 +54,7 @@ class ChatController extends Controller
                 'team_id' => $team->id,
                 'name' => $team->name,
                 'avatar_url' => $team->avatar_url,
+                'can_moderate_messages' => (int) $team->created_by === (int) $user->id,
                 'members' => $team->members->map(fn ($member) => [
                     'id' => $member->id,
                     'name' => $member->name,
@@ -51,7 +62,7 @@ class ChatController extends Controller
                     'avatar_url' => $member->avatar_url,
                 ])->values(),
                 'last_message' => $lastMessage ? [
-                    'body' => $lastMessage->body,
+                    'body' => $lastMessage->deleted_at ? 'This message was deleted' : $lastMessage->body,
                     'sender_name' => $lastMessage->sender?->name,
                     'created_at' => $lastMessage->created_at?->toIso8601String(),
                 ] : null,
@@ -66,10 +77,10 @@ class ChatController extends Controller
             ->get()
             ->map(function (ChatConversation $conversation) use ($user) {
                 $other = $conversation->participants->firstWhere('id', '!=', $user->id);
-                $lastMessage = $conversation->messages()
+                $lastMessage = Cache::remember("chat:conversation:{$conversation->id}:last_message", now()->addSeconds(20), fn () => $conversation->messages()
                     ->with('sender:id,name,avatar')
                     ->latest()
-                    ->first();
+                    ->first());
                 $unreadCount = $this->getUnreadCount($conversation, $user);
 
                 return [
@@ -85,7 +96,7 @@ class ChatController extends Controller
                         'avatar_url' => $member->avatar_url,
                     ])->values(),
                     'last_message' => $lastMessage ? [
-                        'body' => $lastMessage->body,
+                        'body' => $lastMessage->deleted_at ? 'This message was deleted' : $lastMessage->body,
                         'sender_name' => $lastMessage->sender?->name,
                         'created_at' => $lastMessage->created_at?->toIso8601String(),
                     ] : null,
@@ -120,14 +131,21 @@ class ChatController extends Controller
 
     public function messages(ChatConversation $conversation)
     {
+        $user = auth('api')->user();
         if ($conversation->type === 'team') {
             $this->authorizeConversation($conversation);
         } elseif (!$this->authorizePersonalConversation($conversation)) {
             abort(403, 'Unauthorized');
         }
 
+        $hiddenIds = DB::table('chat_message_user_deletions')
+            ->where('user_id', $user->id)
+            ->pluck('chat_message_id')
+            ->all();
+
         $messages = $conversation->messages()
-            ->with('sender:id,name,email,avatar')
+            ->whereNotIn('id', $hiddenIds)
+            ->with(['sender:id,name,email,avatar', 'replyTo.sender:id,name'])
             ->orderBy('created_at')
             ->limit(100)
             ->get()
@@ -147,33 +165,48 @@ class ChatController extends Controller
             abort(403, 'Unauthorized');
         }
 
+        $cooldownKey = "chat:send:cooldown:{$user->id}:{$conversation->id}";
+        if (Cache::has($cooldownKey)) {
+            return response()->json(['message' => 'Please wait before sending another message.'], 429);
+        }
+
         $data = $request->validate([
-            'body' => 'required|string|max:2000',
+            'body' => 'required|string|max:' . self::MESSAGE_MAX_LENGTH,
+            'reply_to_id' => [
+                'nullable',
+                'integer',
+                Rule::exists('chat_messages', 'id')->where('chat_conversation_id', $conversation->id),
+            ],
+            'client_nonce' => 'nullable|string|max:80',
         ]);
 
         $body = trim($data['body']);
-        $mentionsAll = preg_match('/(^|\s)@all\b/i', $body) === 1;
-        $mentionedUserIds = [];
-        if ($team) {
-            $mentionedUserIds = $team->members()
-                ->wherePivot('status', 'accepted')
-                ->get()
-                ->filter(function ($member) use ($body) {
-                    return preg_match('/(^|\s)@' . preg_quote($member->name, '/') . '\b/i', $body) === 1;
-                })
-                ->pluck('id')
-                ->values()
-                ->all();
+        if ($body === '') {
+            return response()->json(['message' => 'Message cannot be empty.'], 422);
+        }
+
+        $duplicateKey = 'chat:message:duplicate:' . sha1($user->id . '|' . $conversation->id . '|' . ($data['client_nonce'] ?? $body));
+        if (!Cache::add($duplicateKey, true, now()->addSeconds(10))) {
+            return response()->json(['message' => 'Duplicate message ignored.'], 409);
+        }
+
+        Cache::put($cooldownKey, true, now()->addSeconds(self::SEND_COOLDOWN_SECONDS));
+
+        [$mentionsAll, $mentionedUserIds] = $this->parseMentions($body, $team);
+        if (count($mentionedUserIds) > self::MAX_MENTIONS) {
+            return response()->json(['message' => 'Too many mentions in one message.'], 422);
         }
 
         $message = $conversation->messages()->create([
             'sender_id' => $user->id,
+            'reply_to_id' => $data['reply_to_id'] ?? null,
             'body' => $body,
             'mentions_all' => $mentionsAll,
             'mentioned_user_ids' => $mentionedUserIds,
-        ])->load('sender:id,name,email,avatar');
+        ])->load(['sender:id,name,email,avatar', 'replyTo.sender:id,name']);
 
         $conversation->touch();
+        $this->invalidateConversationCache($conversation, $user);
 
         $conversation->participants()->syncWithoutDetaching([
             $user->id => ['last_read_at' => now()],
@@ -190,6 +223,11 @@ class ChatController extends Controller
         }
 
         foreach ($recipients as $recipient) {
+            $notificationKey = "chat:fcm:{$conversation->id}:{$message->id}:{$recipient->id}";
+            if (!Cache::add($notificationKey, true, now()->addMinutes(10))) {
+                continue;
+            }
+
             SendPushNotification::dispatch(
                 $recipient,
                 $title,
@@ -209,6 +247,96 @@ class ChatController extends Controller
         }
 
         return response()->json(['message' => $this->formatMessage($message)], 201);
+    }
+
+    public function editMessage(Request $request, ChatConversation $conversation, ChatMessage $message)
+    {
+        $user = auth('api')->user();
+        $this->authorizeMessageAccess($conversation, $message);
+
+        if ($message->sender_id !== $user->id) {
+            abort(403, 'You can edit only your own messages.');
+        }
+
+        if ($message->deleted_at) {
+            return response()->json(['message' => 'Deleted messages cannot be edited.'], 422);
+        }
+
+        if ($message->created_at->lt(now()->subMinutes(self::MESSAGE_EDIT_MINUTES))) {
+            return response()->json(['message' => 'Message edit window has expired.'], 422);
+        }
+
+        $data = $request->validate([
+            'body' => 'required|string|max:' . self::MESSAGE_MAX_LENGTH,
+        ]);
+
+        $body = trim($data['body']);
+        if ($body === '') {
+            return response()->json(['message' => 'Message cannot be empty.'], 422);
+        }
+
+        $team = $conversation->type === 'team' ? $conversation->team : null;
+        [$mentionsAll, $mentionedUserIds] = $this->parseMentions($body, $team);
+        if (count($mentionedUserIds) > self::MAX_MENTIONS) {
+            return response()->json(['message' => 'Too many mentions in one message.'], 422);
+        }
+
+        $message->update([
+            'body' => $body,
+            'mentions_all' => $mentionsAll,
+            'mentioned_user_ids' => $mentionedUserIds,
+            'edited_at' => now(),
+        ]);
+
+        $message->load(['sender:id,name,email,avatar', 'replyTo.sender:id,name']);
+        $this->invalidateConversationCache($conversation, $user);
+
+        return response()->json(['message' => $this->formatMessage($message)]);
+    }
+
+    public function deleteMessage(Request $request, ChatConversation $conversation, ChatMessage $message)
+    {
+        $user = auth('api')->user();
+        $team = $this->authorizeMessageAccess($conversation, $message);
+
+        $data = $request->validate([
+            'scope' => 'required|in:me,everyone',
+        ]);
+
+        if ($data['scope'] === 'me') {
+            DB::table('chat_message_user_deletions')->updateOrInsert([
+                'chat_message_id' => $message->id,
+                'user_id' => $user->id,
+            ], [
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+
+            $this->invalidateConversationCache($conversation, $user);
+
+            return response()->json(['message' => 'Message erased for you.']);
+        }
+
+        $isLeader = $team && (int) $team->created_by === (int) $user->id;
+        if ($message->sender_id !== $user->id && !$isLeader) {
+            abort(403, 'You can delete only your own messages.');
+        }
+
+        if (!$isLeader && $message->created_at->lt(now()->subMinutes(self::MESSAGE_DELETE_MINUTES))) {
+            return response()->json(['message' => 'Message delete window has expired.'], 422);
+        }
+
+        $message->update([
+            'body' => '',
+            'deleted_at' => now(),
+            'deleted_by_id' => $user->id,
+            'delete_reason' => $isLeader && $message->sender_id !== $user->id ? 'leader' : 'sender',
+        ]);
+
+        $message->load(['sender:id,name,email,avatar', 'replyTo.sender:id,name']);
+        $this->invalidateConversationCache($conversation, $user);
+
+        return response()->json(['message' => $this->formatMessage($message)]);
     }
 
     public function startPrivate(User $user)
@@ -286,8 +414,76 @@ class ChatController extends Controller
         return $conversation->participants()->where('user_id', $user->id)->exists();
     }
 
+    private function authorizeMessageAccess(ChatConversation $conversation, ChatMessage $message): ?Team
+    {
+        if ((int) $message->chat_conversation_id !== (int) $conversation->id) {
+            abort(404);
+        }
+
+        if ($conversation->type === 'team') {
+            return $this->authorizeConversation($conversation);
+        }
+
+        if (!$this->authorizePersonalConversation($conversation)) {
+            abort(403, 'Unauthorized');
+        }
+
+        return null;
+    }
+
+    private function parseMentions(string $body, ?Team $team): array
+    {
+        $mentionsAll = preg_match('/(^|\s)@all\b/i', $body) === 1;
+        if (!$team) {
+            return [$mentionsAll, []];
+        }
+
+        preg_match_all('/(^|\s)@([\pL\pN._-]+)/u', $body, $matches);
+        $tokens = collect($matches[2] ?? [])
+            ->map(fn ($token) => mb_strtolower($token))
+            ->reject(fn ($token) => $token === 'all')
+            ->unique()
+            ->values();
+
+        if ($tokens->isEmpty()) {
+            return [$mentionsAll, []];
+        }
+
+        $members = Cache::remember("chat:team:{$team->id}:members", now()->addMinutes(5), fn () => $team->members()
+            ->wherePivot('status', 'accepted')
+            ->get(['users.id', 'users.name', 'users.email']));
+
+        $mentionedUserIds = $members
+            ->filter(function ($member) use ($tokens) {
+                $firstName = mb_strtolower(strtok($member->name, ' ') ?: $member->name);
+                $fullName = mb_strtolower(str_replace(' ', '', $member->name));
+
+                return $tokens->contains($firstName) || $tokens->contains($fullName);
+            })
+            ->pluck('id')
+            ->values()
+            ->all();
+
+        return [$mentionsAll, $mentionedUserIds];
+    }
+
+    private function invalidateConversationCache(ChatConversation $conversation, User $user): void
+    {
+        Cache::forget("chat:conversation:{$conversation->id}:last_message");
+        Cache::forget("chat:user:{$user->id}:teams");
+        if ($conversation->team_id) {
+            Cache::forget("chat:team:{$conversation->team_id}:members");
+        }
+    }
+
     private function formatMessage($message): array
     {
+        $deletedLabel = match ($message->delete_reason) {
+            'leader' => 'Message deleted by leader',
+            'admin' => 'Deleted by admin',
+            default => 'This message was deleted',
+        };
+
         return [
             'id' => $message->id,
             'conversation_id' => $message->chat_conversation_id,
@@ -295,9 +491,15 @@ class ChatController extends Controller
             'sender_name' => $message->sender?->name,
             'sender_email' => $message->sender?->email,
             'sender_avatar_url' => $message->sender?->avatar_url,
-            'body' => $message->body,
+            'body' => $message->deleted_at ? $deletedLabel : $message->body,
             'mentions_all' => $message->mentions_all,
             'mentioned_user_ids' => $message->mentioned_user_ids ?? [],
+            'reply_to_id' => $message->reply_to_id,
+            'reply_sender_name' => $message->replyTo?->sender?->name,
+            'reply_body' => $message->replyTo?->deleted_at ? 'This message was deleted' : $message->replyTo?->body,
+            'edited_at' => $message->edited_at?->toIso8601String(),
+            'deleted_at' => $message->deleted_at?->toIso8601String(),
+            'delete_reason' => $message->delete_reason,
             'created_at' => $message->created_at?->toIso8601String(),
         ];
     }

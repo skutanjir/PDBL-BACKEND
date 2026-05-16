@@ -429,10 +429,10 @@ class AuthController extends Controller
             'otp'   => 'required|string|size:4',
         ]);
 
-        // Rate limit: max 5 wrong attempts per 10 minutes
+        // Rate limit: max 10 wrong attempts per 10 minutes
         $attemptKey = 'verify_email_attempts:' . $request->email;
         $attempts   = Cache::get($attemptKey, 0);
-        if ($attempts >= 5) {
+        if ($attempts >= 10) {
             return response()->json([
                 'status'  => 'error',
                 'message' => 'Too many failed attempts. Please request a new code.',
@@ -533,7 +533,7 @@ class AuthController extends Controller
         $email = $user ? $user->email : $pendingRegistration->email;
         $name = $user ? $user->name : $pendingRegistration->pending_name;
 
-        // Rate limit: max 3 resends per 10 minutes per email
+        // Rate limit: max 6 resends per 10 minutes per email
         $countKey   = 'verify_resend_count:' . $email;
         $cooldownKey = 'verify_resend_cooldown:' . $email;
 
@@ -547,7 +547,7 @@ class AuthController extends Controller
         }
 
         $count = Cache::get($countKey, 0);
-        if ($count >= 3) {
+        if ($count >= 6) {
             return response()->json([
                 'status'  => 'error',
                 'message' => 'Too many attempts. Please wait 10 minutes before requesting a new code.',
@@ -607,20 +607,20 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // Rate limit: 60s cooldown between resends, max 5 per hour
+        // Rate limit: 30s cooldown between resends, max 10 per hour
         $cooldownKey = 'forgot_pw_cooldown:' . $user->email;
         $countKey    = 'forgot_pw_count:' . $user->email;
 
         if (Cache::has($cooldownKey)) {
             return response()->json([
                 'status'      => 'error',
-                'message'     => 'Please wait 60 seconds before requesting another code.',
-                'retry_after' => 60,
+                'message'     => 'Please wait 30 seconds before requesting another code.',
+                'retry_after' => 30,
             ], 429);
         }
 
         $count = Cache::get($countKey, 0);
-        if ($count >= 5) {
+        if ($count >= 10) {
             return response()->json([
                 'status'      => 'error',
                 'message'     => 'Too many attempts. Please wait 1 hour before trying again.',
@@ -628,7 +628,7 @@ class AuthController extends Controller
             ], 429);
         }
 
-        Cache::put($cooldownKey, true, now()->addSeconds(60));
+        Cache::put($cooldownKey, true, now()->addSeconds(30));
         Cache::put($countKey, $count + 1, now()->addHour());
 
         // Generate 4-digit OTP
