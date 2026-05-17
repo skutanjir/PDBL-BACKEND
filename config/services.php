@@ -40,4 +40,26 @@ return [
         'project_id' => env('FIREBASE_PROJECT_ID'),
     ],
 
+    'gemini' => [
+        'keys' => array_values(array_filter([
+            env('API_KEY_GEMINI1'),
+            env('API_KEY_GEMINI2'),
+            env('API_KEY_GEMINI3'),
+            env('API_KEY_GEMINI4'),
+            env('API_KEY_GEMINI5'),
+            env('API_KEY_GEMINI6'),
+            env('API_KEY_GEMINI7'),
+            env('API_KEY_GEMINI8'),
+            env('API_KEY_GEMINI9'),
+            env('API_KEY_GEMINI10'),
+            env('API_KEY_GEMINI11'),
+            env('API_KEY_GEMINI12'),
+            env('API_KEY_GEMINI13'),
+            env('API_KEY_GEMINI14'),
+        ])),
+        'model' => env('GEMINI_MODEL', 'gemini-flash-lite-latest'),
+        'timeout' => (int) env('GEMINI_TIMEOUT', 25),
+        'cooldown_seconds' => (int) env('GEMINI_KEY_COOLDOWN_SECONDS', 300),
+    ],
+
 ];
