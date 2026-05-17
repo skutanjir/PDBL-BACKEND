@@ -23,6 +23,7 @@ REST API backend for the WUDI task management platform. Built with Laravel 12 an
   - [Notifications](#5-notifications)
   - [Notification Settings](#6-notification-settings)
   - [Chat](#7-chat)
+  - [AI Assistant](#8-ai-assistant)
 - [Database Schema](#database-schema)
 - [Middleware](#middleware)
 - [Scheduled Commands](#scheduled-commands)
@@ -43,6 +44,7 @@ REST API backend for the WUDI task management platform. Built with Laravel 12 an
 - **Team Collaboration** -- Create teams with avatar, deadline, and max member limits. Invite members by email, accept or decline invitations, remove or ban members. Owner-based permission model.
 - **Team Task Completion** -- Per-member completion tracking via `completed_by` array. A task is marked complete only when all assigned members have individually checked it.
 - **Chat System** -- Personal and team conversations with message history, read state, replies, editing, soft deletion, mention parsing, duplicate-send protection, and FCM notification fan-out.
+- **WUDI AI Assistant** -- Authenticated task-focused assistant API for deadlines, task summaries, priority recommendations, guided task actions, and user-specific productivity context.
 - **Push Notifications** -- Firebase Cloud Messaging (FCM HTTP v1) with queued delivery via Laravel Jobs. Notifications for team invitations, member removals, and deadline reminders.
 - **In-App Notifications** -- Persistent notification records with read/unread state, mark-as-read, and bulk mark-all-as-read.
 - **Notification Settings** -- Per-user configuration for reminder days, reminder time, vibration, and remote alert toggles.
@@ -95,6 +97,7 @@ Client Request
 - Queued push notifications to avoid blocking API responses
 - Per-member completion tracking on team tasks using JSON arrays (assigned_emails, completed_by)
 - Chat data is normalized through conversations, messages, participants, and per-user deletion records to support private and team discussion flows
+- AI processing is isolated from personal and team chat, uses authenticated user scope only, and stores assistant history separately from human conversations
 
 ---
 
@@ -103,6 +106,17 @@ Client Request
 ```
 PDBL-BACKEND/
 |-- app/
+|   |-- AI/
+|   |   |-- Context/
+|   |   |   |-- AiContextBuilder.php       # Builds authenticated user task context for assistant responses
+|   |   |-- Providers/                  # AI provider integrations
+|   |   |-- Rotators/                   # Provider credential selection and cooldown management
+|   |   |-- Services/
+|   |   |   |-- WudiAiService.php          # Assistant orchestration, history, guardrails, quick answers
+|   |   |   |-- AiTaskManagerService.php   # Guided task creation, editing, completion, and deletion flows
+|   |   |   |-- AiMemoryService.php        # User-scoped productivity memory and context refresh
+|   |   |-- Validators/
+|   |       |-- AiTopicValidator.php       # Topic scope, safety checks, and assistant intent validation
 |   |-- Console/
 |   |   |-- Commands/
 |   |       |-- CheckTaskDeadlines.php     # Daily deadline check and notification creation
@@ -115,6 +129,7 @@ PDBL-BACKEND/
 |   |   |   |-- ChatController.php         # Conversations, messages, replies, edits, deletion
 |   |   |   |-- ProfileController.php      # Avatar, password, email, name updates
 |   |   |   |-- NotificationController.php # List, mark read, mark all read, delete
+|   |   |   |-- AiController.php           # AI assistant chat, history, and cancellation endpoints
 |   |   |   |-- UserNotificationSettingController.php  # Get/update reminder settings
 |   |   |-- Middleware/
 |   |       |-- ForceGzipResponse.php      # Gzip compression for JSON responses > 1KB
@@ -139,7 +154,7 @@ PDBL-BACKEND/
 |   |-- jwt.php                            # JWT configuration (algorithm, TTL, blacklist)
 |   |-- database.php, auth.php, queue.php  # Standard Laravel config
 |-- database/
-|   |-- migrations/                        # Schema history including auth, tasks, teams, notifications, and chat
+|   |-- migrations/                        # Schema history including auth, tasks, teams, notifications, chat, and AI tables
 |   |-- factories/
 |   |-- seeders/
 |-- routes/
@@ -226,6 +241,8 @@ PDBL-BACKEND/
 | `QUEUE_CONNECTION`     | Queue driver                               | `database`                     |
 | `FIREBASE_CREDENTIALS` | Path to Firebase service account JSON      | `storage/app/firebase.json`    |
 | `FIREBASE_PROJECT_ID`  | Firebase project identifier                | `your-project-id`              |
+| `AI_MODEL`             | AI model identifier used by assistant      | (provider-specific value)      |
+| `AI_PROVIDER_KEYS`      | Backend-only AI provider credentials       | (stored in environment only)   |
 | `MAIL_MAILER`          | Mail transport driver                      | `smtp`                         |
 | `MAIL_HOST`            | SMTP host                                  | `smtp.gmail.com`               |
 | `MAIL_PORT`            | SMTP port                                  | `587`                          |
@@ -461,6 +478,36 @@ Guest endpoints accept `X-Device-ID: <uuid>` header as alternative.
 
 ---
 
+### 8. AI Assistant
+
+| Method | Endpoint       | Auth   | Description                                      |
+|--------|----------------|--------|--------------------------------------------------|
+| GET    | `/ai/history`  | Bearer | Retrieve the authenticated user's AI chat history |
+| POST   | `/ai/chat`     | Bearer | Send a task-focused assistant message             |
+| POST   | `/ai/cancel`   | Bearer | Cancel an active assistant request                |
+
+The AI assistant is scoped to the authenticated user and is designed for task management, scheduling, deadlines, priorities, and productivity planning. It can provide deterministic task summaries, overdue task checks, deadline recommendations, priority ordering, guided task creation, guided task updates, completion handling, and deletion confirmation.
+
+Assistant history and metadata are stored separately from personal and team chat. The assistant uses only the authenticated user's task data and user-specific productivity memory. It must not be used to access another user's data, expose internal configuration, or disclose sensitive infrastructure details.
+
+**Chat Payload:**
+```json
+{
+  "message": "What should I prioritize today?",
+  "conversation_id": 1,
+  "request_id": "client-generated-request-id"
+}
+```
+
+**Cancel Payload:**
+```json
+{
+  "request_id": "client-generated-request-id"
+}
+```
+
+---
+
 ## Database Schema
 
 ### Models and Relationships
@@ -478,6 +525,16 @@ ChatConversation (*) <--> (*) User [pivot: chat_conversation_user with last_read
 ChatMessage (*) ---> (1) User [sender]
 ChatMessage (*) ---> (0..1) ChatMessage [reply_to]
 ```
+
+### AI Tables
+
+- `ai_conversations` -- One assistant conversation stream per authenticated user session context.
+- `ai_messages` -- User and assistant messages with optional metadata for structured task cards, summaries, recommendations, and action results.
+- `ai_memories` -- User-scoped productivity memory summary and safe context signals derived from the authenticated user's own interactions and tasks.
+- `ai_context_cache` -- Short-lived assistant context cache for reducing repeated task-context computation.
+- `ai_request_logs` -- Request lifecycle records for assistant request status, token estimates, and operational tracing.
+
+AI tables are separate from human chat tables and must remain scoped to the authenticated user.
 
 ### Migration Timeline
 
