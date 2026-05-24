@@ -8,7 +8,15 @@ class GeminiKeyRotator
 {
     public function next(): ?string
     {
-        $keys = array_values(array_filter(config('services.gemini.keys', []), fn ($key) => is_string($key) && trim($key) !== ''));
+        $configuredKeys = config('services.gemini.keys', []);
+        $keys = [];
+        if (is_array($configuredKeys)) {
+            foreach ($configuredKeys as $key) {
+                if (is_string($key) && trim($key) !== '') {
+                    $keys[] = $key;
+                }
+            }
+        }
         if (empty($keys)) {
             return null;
         }

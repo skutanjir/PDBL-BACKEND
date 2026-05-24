@@ -69,8 +69,10 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     Route::post('chat/private/{user}', [ChatController::class, 'startPrivate']);
 
     // WUDI AI Assistant
+    Route::get('ai/conversations', [AiController::class, 'conversations'])->middleware('throttle:60,1');
+    Route::post('ai/conversations', [AiController::class, 'newConversation'])->middleware('throttle:20,1');
     Route::get('ai/history', [AiController::class, 'history'])->middleware('throttle:60,1');
-    Route::post('ai/chat', [AiController::class, 'chat'])->middleware('throttle:20,1');
+    Route::post('ai/chat', [AiController::class, 'chat'])->middleware('throttle:120,1');
     Route::post('ai/cancel', [AiController::class, 'cancel'])->middleware('throttle:60,1');
 
     // Notification Settings

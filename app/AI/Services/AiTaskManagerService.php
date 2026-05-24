@@ -14,6 +14,7 @@ class AiTaskManagerService
     private const DELETE_WORDS = ['delete', 'remove', 'hapus', 'apus', 'buang', 'ilangin', 'hilangin'];
     private const COMPLETE_WORDS = ['complete', 'finish', 'done', 'selesai', 'selese', 'beres', 'kelar', 'rampung', 'tuntas', 'udah', 'sudah'];
     private const TASK_WORDS = ['task', 'todo', 'tugas', 'jadwal', 'reminder', 'pengingat'];
+    private const MAX_DEADLINE_YEARS = 15;
 
     public function apply(User $user, string $message): array
     {
@@ -25,7 +26,14 @@ class AiTaskManagerService
         $draft = Cache::get($draftKey);
         $pending = Cache::get($pendingKey);
 
-        if ($this->isRecommendationOnly($lower)) {
+        if ($this->hasOutOfRangeExplicitYear($text)) {
+            Cache::forget($draftKey);
+            Cache::forget($pendingKey);
+
+            return $this->deadlineTooFarResponse();
+        }
+
+        if ($this->isRecommendationOnly($lower) || $this->isConsultationOnly($lower)) {
             Cache::forget($pendingKey);
             return ['action' => null];
         }
@@ -205,7 +213,7 @@ class AiTaskManagerService
 
         $todo = $this->selectPendingTask($user, $pending, $text);
         if (!$todo) {
-            return $this->askWhichTask($user, $pendingKey, $pending['action'], $pending['candidates'] ?? [], 'Aku belum nangkep yang mana. Pilih nomor task-nya aja ya, atau bilang “batal”.');
+            return $this->askWhichTask($user, $pendingKey, $pending['action'], $pending['candidates'] ?? [], $this->commandNotFoundText($text));
         }
 
         if (($pending['action'] ?? null) === 'edit') {
@@ -275,7 +283,17 @@ class AiTaskManagerService
         }
 
         if ($needle === '') {
-            return $this->askWhichTask($user, $pendingKey, $action, $candidates->pluck('id')->all(), $this->clarifyActionText($action, $candidates->isEmpty()));
+            return $this->askWhichTask($user, $pendingKey, $action, $candidates->pluck('id')->all(), $this->clarifyActionText($action, $candidates->isEmpty(), $text));
+        }
+
+        if ($candidates->isEmpty()) {
+            Cache::forget($pendingKey);
+            return [
+                'action' => 'command_not_found',
+                'kind' => 'empty_state',
+                'title' => $this->commandNotFoundText($text),
+                'note' => $this->commandNotFoundText($text),
+            ];
         }
 
         if ($candidates->count() === 1) {
@@ -300,7 +318,7 @@ class AiTaskManagerService
                 : $this->completeTask($user, $pendingKey, $todo);
         }
 
-        return $this->askWhichTask($user, $pendingKey, $action, $candidates->pluck('id')->all(), $this->clarifyActionText($action, $candidates->isEmpty()));
+        return $this->askWhichTask($user, $pendingKey, $action, $candidates->pluck('id')->all(), $this->clarifyActionText($action, $candidates->isEmpty(), $text));
     }
 
     private function askWhichTask(User $user, string $pendingKey, string $action, array $candidateIds, string $note): array
@@ -315,14 +333,25 @@ class AiTaskManagerService
             'action' => 'clarify_task_action',
             'kind' => 'task_candidates',
             'tasks' => $tasks->map(fn (Todo $todo) => $this->taskPayload($todo))->values()->all(),
-            'note' => $note . ($tasks->isEmpty() ? '' : "\n\nPilih nomor/nama task-nya aja. Kalau nggak jadi, bilang “batal”."),
+            'note' => $note . ($tasks->isEmpty() ? '' : ($this->isMostlyEnglish($note)
+                ? "\n\nPick the task number/name. If you want to cancel, say “cancel”."
+                : "\n\nPilih nomor/nama task-nya aja. Kalau nggak jadi, bilang “batal”.")),
         ];
     }
 
-    private function clarifyActionText(string $action, bool $empty): string
+    private function clarifyActionText(string $action, bool $empty, string $message): string
     {
         if ($empty) {
-            return 'Aku belum nemu task yang cocok. Coba sebut nama task-nya agak lengkap ya.';
+            return $this->commandNotFoundText($message);
+        }
+
+        if ($this->isMostlyEnglish($message)) {
+            return match ($action) {
+                'edit' => 'Which task do you want to edit?',
+                'delete' => 'Which task do you want to delete?',
+                'complete' => 'Which task is completed?',
+                default => 'Which one?',
+            };
         }
 
         return match ($action) {
@@ -331,6 +360,18 @@ class AiTaskManagerService
             'complete' => 'Yang sudah selesai yang mana nih?',
             default => 'Yang mana nih?',
         };
+    }
+
+    private function commandNotFoundText(string $message): string
+    {
+        return $this->isMostlyEnglish($message)
+            ? 'Sorry, that command was not found.'
+            : 'Mohon maaf, command tersebut tidak ada.';
+    }
+
+    private function isMostlyEnglish(string $message): bool
+    {
+        return preg_match('/\b(the|that|this|what|which|task|todo|deadline|priority|delete|edit|complete|finish|show|summarize|please)\b/i', $message) === 1;
     }
 
     private function selectPendingTask(User $user, array $pending, string $text): ?Todo
@@ -357,6 +398,12 @@ class AiTaskManagerService
 
     private function updateTask(User $user, string $pendingKey, Todo $todo, array $updates): array
     {
+        if (!$this->deadlineWithinAllowedRange($updates['deadline'] ?? null)) {
+            Cache::forget($pendingKey);
+
+            return $this->deadlineTooFarResponse();
+        }
+
         $todo->update($updates);
         Cache::forget($pendingKey);
         Cache::forget("ai:context:{$user->id}");
@@ -480,8 +527,14 @@ class AiTaskManagerService
 
     private function isRecommendationOnly(string $lower): bool
     {
-        return preg_match('/\b(rekomendasi(?:kan)?|recommend|suggest|saran(?:in)?|konsultasi|enak\s+(?:gimana|mana|apa|dikerjain|dimulai))\b/', $lower) === 1
+        return preg_match('/\b(rekomendasi(?:kan)?|recommend|suggest|saran(?:in)?|konsultasi|konsul|curhat|nanya|tanya|enak\s+(?:gimana|mana|apa|dikerjain|dimulai))\b/', $lower) === 1
             && preg_match('/\b(create|add|make|bikin|buat|buatkan|hapus|delete|remove|edit|ubah|update|complete|done|selesai)\b/', $lower) !== 1;
+    }
+
+    private function isConsultationOnly(string $lower): bool
+    {
+        return preg_match('/\b(bingung|kewalahan|overwhelmed|capek|lelah|pusing|mulai\s+dari\s+mana|harus\s+mulai|atur\s+prioritas|prioritas\s+dulu|minta\s+saran|butuh\s+saran|butuh\s+masukan)\b/', $lower) === 1
+            && preg_match('/\b(create|add|make|bikin|buat\s+(?:task|todo|tugas|jadwal|reminder|pengingat)|buatkan|buatin|tambahkan|tambah(?:kan|in)?|hapus|delete|remove|edit|ubah|update|complete|done|selesai)\b/', $lower) !== 1;
     }
 
     private function isCreateIntent(string $lower): bool
@@ -509,6 +562,13 @@ class AiTaskManagerService
 
     private function extractTaskNeedle(string $text, string $action): string
     {
+        if ($action === 'edit' && preg_match('/\b(?:judul|title|nama|namanya|deskripsi|description|desc)\s+(?:task|todo|tugas)?\s*(.+?)\s+(?:jadi|to|ke|=|:)\s+.+$/i', $text, $match)) {
+            $needle = trim($match[1]);
+            if ($needle !== '') {
+                return $needle;
+            }
+        }
+
         if ($action === 'edit' && preg_match('/\b(?:deadline|tanggal|date|jam|pukul|at|priority|prioritas|deskripsi|description|desc|judul|title|nama|namanya)\b/i', $text, $field, PREG_OFFSET_CAPTURE)) {
             $prefix = trim(substr($text, 0, $field[0][1]));
             $prefix = preg_replace('/\b(edit|editt|update|ubah|ubahin|rubah|ganti|gantiin|gnti|change|rename|renam|renamein|reschedule|reskedul|editin|revisi|benerin|bnerin|perbaiki|perbaikin|perbarui|majuin|mundurin|task|todo|tugas|yang|ini|itu|the|my|aku|saya|ku|dong|ya|kak|please|tolong|aja|nih|deh|plis|pls)\b/i', ' ', $prefix) ?? $prefix;
@@ -609,15 +669,12 @@ class AiTaskManagerService
             $updates['priority'] = $priority;
         }
 
-        $description = $this->extractField($text, ['deskripsi', 'description', 'desc']);
+        $description = $this->extractDescriptionUpdate($text);
         if ($description !== null) {
             $updates['deskripsi'] = $description;
         }
 
-        $title = $this->extractField($text, ['judul', 'title', 'nama', 'namanya', 'rename to', 'ganti nama', 'ubah judul']);
-        if ($title === null && preg_match('/\b(?:judul|title|nama|namanya|rename\s+to|renam\s+to|ganti\s+nama|ubah\s+judul)\s*(?::|=|jadi|to)?\s*(.+)$/i', $text, $match)) {
-            $title = trim($match[1]);
-        }
+        $title = $this->extractTitleUpdate($text);
 
         if ($title !== null) {
             $updates['judul'] = $this->extractTitle($title);
@@ -722,12 +779,12 @@ class AiTaskManagerService
             $draft['priority'] = $priority;
         }
 
-        $description = $this->extractField($text, ['deskripsi', 'description', 'desc']);
+        $description = $this->extractDescriptionUpdate($text);
         if ($description !== null) {
             $draft['description'] = $description;
         }
 
-        $title = $this->extractField($text, ['nama', 'namanya', 'judul', 'title']);
+        $title = $this->extractTitleUpdate($text);
         if ($title !== null) {
             $draft['title'] = $this->extractTitle($title);
         }
@@ -735,10 +792,62 @@ class AiTaskManagerService
         return $draft;
     }
 
+    private function extractTitleUpdate(string $text): ?string
+    {
+        $patterns = [
+            '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update|rename|renam)\s+(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s+.+?\s+(?:jadi|to|ke|=|:)\s*(.+)$/i',
+            '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update|rename|renam)\s+(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:)?\s*(.+)$/i',
+            '/\b(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:|adalah|is)\s*(.+)$/i',
+            '/\b(?:rename\s+to|renam\s+to|ganti\s+nama|ubah\s+judul)\s*(.+)$/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanFieldUpdateValue($match[1]);
+            }
+        }
+
+        $title = $this->extractField($text, ['nama', 'namanya', 'judul', 'title']);
+        return $title === null ? null : $this->cleanFieldUpdateValue($title);
+    }
+
+    private function extractDescriptionUpdate(string $text): ?string
+    {
+        $patterns = [
+            '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update)\s+(?:deskripsi|description|desc)(?:\s+(?:task|todo|tugas))?\s+.+?\s+(?:jadi|to|ke|=|:)\s*(.+)$/i',
+            '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update)\s+(?:deskripsi|description|desc)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:)?\s*(.+)$/i',
+            '/\b(?:deskripsi|description|desc)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:|adalah|is)\s*(.+)$/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $text, $match)) {
+                return $this->cleanFieldUpdateValue($match[1]);
+            }
+        }
+
+        $description = $this->extractField($text, ['deskripsi', 'description', 'desc']);
+        return $description === null ? null : $this->cleanFieldUpdateValue($description);
+    }
+
+    private function cleanFieldUpdateValue(string $value): string
+    {
+        $value = trim($value, " \t\n\r\0\x0B\"'“”");
+        $value = preg_replace('/^(?:task|todo|tugas)\s+(?:jadi|to|ke|=|:)\s+/i', '', $value) ?? $value;
+        $value = preg_replace('/\s+(?:deadline|tanggal|date|jam|pukul|priority|prioritas)\b.*$/i', '', $value) ?? $value;
+
+        return trim($value, " \t\n\r\0\x0B\"'“”");
+    }
+
     private function createFromDraft(User $user, string $draftKey, array $draft): array
     {
         if (empty($draft['title'])) {
             return ['action' => 'draft_task', 'draft' => $draft, 'note' => 'Boleh. Judul task-nya apa dulu? Contoh: “judul Coding PHP”. Kalau batal, bilang “batal” ya 🙂'];
+        }
+
+        if (!$this->deadlineWithinAllowedRange($draft['deadline'] ?? null)) {
+            Cache::forget($draftKey);
+
+            return $this->deadlineTooFarResponse();
         }
 
         $todo = Todo::create([
@@ -842,6 +951,14 @@ class AiTaskManagerService
     private function extractDeadline(string $text): ?Carbon
     {
         try {
+            if (preg_match('/\b(20\d{2})[-\/]([01]?\d)[-\/]([0-3]?\d)\b/', $text, $date)) {
+                return Carbon::create((int) $date[1], (int) $date[2], (int) $date[3], 20, 0);
+            }
+
+            if (preg_match('/\b([0-3]?\d)[-\/]([01]?\d)[-\/](20\d{2})\b/', $text, $date)) {
+                return Carbon::create((int) $date[3], (int) $date[2], (int) $date[1], 20, 0);
+            }
+
             if (preg_match('/\b(?:(?:jam|pukul|at)\s*)?(\d{1,2})[.:](\d{2})\b/i', $text, $time)) {
                 $base = $this->dateBase($text);
 
@@ -935,5 +1052,47 @@ class AiTaskManagerService
         }
 
         return $now->copy();
+    }
+
+    private function deadlineWithinAllowedRange(mixed $deadline): bool
+    {
+        if (empty($deadline)) {
+            return true;
+        }
+
+        try {
+            $date = $deadline instanceof Carbon ? $deadline : Carbon::parse((string) $deadline);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return !$date->greaterThan(now()->addYears(self::MAX_DEADLINE_YEARS)->endOfDay());
+    }
+
+    private function hasOutOfRangeExplicitYear(string $text): bool
+    {
+        if (!preg_match_all('/\b20\d{2}\b/', $text, $matches)) {
+            return false;
+        }
+
+        $maxYear = now()->addYears(self::MAX_DEADLINE_YEARS)->year;
+        foreach ($matches[0] as $year) {
+            if ((int) $year > $maxYear) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function deadlineTooFarResponse(): array
+    {
+        $maxYear = now()->addYears(self::MAX_DEADLINE_YEARS)->year;
+
+        return [
+            'action' => 'deadline_out_of_range',
+            'kind' => 'validation_error',
+            'note' => "Deadline task maksimal sampai tahun {$maxYear}. Coba pilih tanggal yang masih dalam range +" . self::MAX_DEADLINE_YEARS . ' tahun ya.',
+        ];
     }
 }

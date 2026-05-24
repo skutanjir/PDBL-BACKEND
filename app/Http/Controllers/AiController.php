@@ -14,6 +14,8 @@ class AiController extends Controller
             'message' => 'required|string|max:1200',
             'conversation_id' => 'nullable|integer',
             'request_id' => 'nullable|string|max:80',
+            'timezone' => 'nullable|string|max:80',
+            'local_hour' => 'nullable|integer|min:0|max:23',
         ]);
 
         $user = auth('api')->user();
@@ -26,17 +28,41 @@ class AiController extends Controller
             $request->string('message')->toString(),
             $request->integer('conversation_id') ?: null,
             $request->string('request_id')->toString() ?: null,
+            $request->string('timezone')->toString() ?: $request->header('X-Timezone'),
+            $request->has('local_hour') ? $request->integer('local_hour') : null,
         ));
     }
 
     public function history(Request $request, WudiAiService $ai)
+    {
+        $request->validate(['conversation_id' => 'nullable|integer']);
+
+        $user = auth('api')->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        return response()->json($ai->history($user, $request->integer('conversation_id') ?: null));
+    }
+
+    public function conversations(WudiAiService $ai)
     {
         $user = auth('api')->user();
         if (!$user) {
             return response()->json(['message' => 'Unauthorized'], 401);
         }
 
-        return response()->json($ai->history($user));
+        return response()->json($ai->conversations($user));
+    }
+
+    public function newConversation(WudiAiService $ai)
+    {
+        $user = auth('api')->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthorized'], 401);
+        }
+
+        return response()->json($ai->newConversation($user));
     }
 
     public function cancel(Request $request)

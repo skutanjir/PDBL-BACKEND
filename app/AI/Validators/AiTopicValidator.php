@@ -11,7 +11,7 @@ class AiTopicValidator
         '/\b(?:stop|do\s+not|don\'t)\s+(?:following|obeying|using)\s+(?:the\s+|your\s+|all\s+)*(?:instructions?|rules?|guidelines?|constraints?|restrictions?|policy|policies|guardrails?)\b/',
         '/\b(?:system|developer|admin|root)\s*(?:override|message|prompt|instruction|mode|command)\b/',
         '/\b(?:you\s+are\s+now|act\s+as|pretend\s+to\s+be|roleplay\s+as|simulate)\s+(?:an?\s+)?(?:unrestricted|uncensored|unfiltered|jailbroken|developer\s+mode|dan|do\s+anything\s+now|root|admin)\b/',
-        '/\b(?:dan|do\s+anything\s+now|developer\s+mode|jailbreak\s+mode|god\s+mode|evil\s+confidant|grandmother\s+trick|token\s+smuggling)\b/',
+        '/\b(?:do\s+anything\s+now|developer\s+mode|jailbreak\s+mode|god\s+mode|evil\s+confidant|grandmother\s+trick|token\s+smuggling)\b/',
         '/\b(?:show|print|output|repeat|reveal|disclose|expose|leak|dump|extract|share|tell\s+me|summarize|tldr|translate|encode|decode)\s+(?:the\s+|your\s+|all\s+)*(?:system|developer|hidden|internal|initial|original|secret|confidential)?\s*(?:prompt|instructions?|directives?|rules?|policy|policies|configuration|config|env|\.env|secrets?|tokens?|api\s*keys?|keys?)\b/',
         '/\b(?:what\s+(?:is|are)|list|describe)\s+(?:the\s+|your\s+)*(?:system|developer|hidden|internal|initial|original|secret|backend)?\s*(?:prompt|instructions?|directives?|rules?|constraints?|tools?|apis?|functions?|endpoints?|configuration|config|env|\.env|secrets?|tokens?|api\s*keys?|keys?)\b/',
         '/\b(?:what\s+is\s+written|repeat\s+what\s+is\s+above|above\s+instructions?|previous\s+instructions?|hidden\s+instructions?)\b/',
@@ -33,29 +33,6 @@ class AiTopicValidator
         '/\b(?:id|user\s*id|task\s*id|todo\s*id)\s*[:#-]?\s*\d{2,}\b.*\b(?:task|tasks|todo|todos|tugas|database|db|email|nama|name|user|pengguna)\b/',
         '/\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b.*\b(?:task|tasks|todo|todos|tugas|database|db|deadline|priority|prioritas|jadwal)\b/',
         '/\b(?:task|tasks|todo|todos|tugas|deadline|priority|prioritas|jadwal)\b.*\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b/',
-    ];
-
-    private const ALLOWED = [
-        'task', 'todo', 'deadline', 'due', 'priority', 'prioritize', 'schedule', 'today', 'tomorrow',
-        'overdue', 'complete', 'completed', 'unfinished', 'rename', 'delete', 'create', 'edit', 'move',
-        'remind', 'productivity', 'plan', 'focus', 'meeting', 'work', 'workflow', 'habit', 'start with',
-        'tugas', 'jadwal', 'deadline', 'tenggat', 'prioritas', 'hari ini', 'besok', 'terlambat',
-        'lewat deadline', 'selesai', 'belum selesai', 'ubah', 'ganti', 'hapus', 'buat', 'tambahkan',
-        'pindahkan', 'ingatkan', 'produktivitas', 'rencana', 'fokus', 'rapat', 'kerja', 'kebiasaan',
-        'task ku', 'taskku', 'task saya', 'tugas ku', 'tugasku', 'tugas saya', 'apa aja', 'daftar task', 'daftar tugas',
-        'mepet', 'telat', 'kelewat', 'ketinggalan', 'urgent', 'duluan', 'mulai dari mana', 'urutin',
-        'urutkan', 'progres', 'progress', 'rekap', 'overview', 'agenda', 'kerjaan', 'beres', 'kelar', 'rampung',
-        'edit dong', 'ubah dong', 'hapus dong', 'delete it', 'remove it', 'udah beres', 'sudah beres', 'selesein', 'selesaiin',
-        'gantiin', 'ubahin', 'apusin', 'hapusin', 'kelarin', 'tuntasin', 'buatin', 'tambahin',
-        'maaf', 'sorry', 'belum bisa', 'nanti dulu', 'lagi sibuk', 'tidak bisa sekarang', 'nggak bisa sekarang',
-        'gabisa sekarang', 'ga bisa sekarang', 'ingat', 'remember', 'biasanya', 'prefer', 'lebih suka',
-    ];
-
-    private const BLOCKED = [
-        'politic', 'movie', 'game', 'joke', 'song', 'code', 'programming', 'recipe', 'celebrity',
-        'weather', 'news', 'sport', 'dating', 'story', 'essay', 'homework',
-        'politik', 'film', 'permainan', 'lelucon', 'lagu', 'coding', 'resep', 'artis', 'cuaca',
-        'berita', 'olahraga', 'pacaran', 'cerita', 'esai',
     ];
 
     private const SENSITIVE = [
@@ -95,19 +72,7 @@ class AiTopicValidator
             return false;
         }
 
-        foreach (self::ALLOWED as $word) {
-            if (str_contains($text, $word)) {
-                return true;
-            }
-        }
-
-        foreach (self::BLOCKED as $word) {
-            if (str_contains($text, $word)) {
-                return false;
-            }
-        }
-
-        return false;
+        return true;
     }
 
     public function isSensitiveRequest(string $message): bool
@@ -210,7 +175,7 @@ class AiTopicValidator
     {
         $text = $this->normalize($message);
 
-        return preg_match('/\b(?:apa\s+saja|apa\s+aja|bisa\s+apa|(?:kamu|kau|wudi|ai(?:nya)?)\s+(?:bisa\s+apa|punya\s+fitur\s+apa|fitur(?:nya)?\s+apa)|fitur(?:nya)?\s+(?:apa|apa\s+aja|apa\s+saja)|what\s+can\s+you\s+do|what\s+do\s+you\s+do|how\s+can\s+you\s+help|capabilities)\b/', $text) === 1;
+        return preg_match('/\b(?:apa\s+saja|apa\s+aja|bisa\s+apa|(?:kamu|kau|wudi|ai(?:nya)?)\s+(?:bisa\s+apa|punya\s+fitur\s+apa|fitur(?:nya)?\s+apa)|fitur(?:nya)?\s+(?:apa|apa\s+aja|apa\s+saja)|what\s+can\s+you\s+do|what\s+you\s+can\s+do|what\s+do\s+you\s+do|how\s+can\s+you\s+help|capabilities)\b/', $text) === 1;
     }
 
     private function hasTaskActionShape(string $text): bool
@@ -222,12 +187,12 @@ class AiTopicValidator
         return $hasActionishWord && ($hasTaskWord || $hasTaskAttribute);
     }
 
-    public function greetingResponse(string $message): string
+    public function greetingResponse(string $message, ?string $timezone = null, ?int $localHour = null): string
     {
         $text = $this->normalize($message);
-        $period = $this->greetingPeriod($text);
+        $period = $this->greetingPeriod($text, $timezone, $localHour);
 
-        if (!$this->isMostlyEnglish($message)) {
+        if ($this->isExplicitIndonesianGreeting($text)) {
             return match ($period) {
                 'morning' => 'Selamat pagi 👋 Mau aku bantu cek agenda pagi ini, deadline mepet, atau prioritas hari ini?',
                 'afternoon' => 'Selamat siang 👋 Mau aku bantu lihat progress hari ini atau urutin task yang paling penting?',
@@ -246,7 +211,12 @@ class AiTopicValidator
         };
     }
 
-    private function greetingPeriod(string $text): ?string
+    private function isExplicitIndonesianGreeting(string $text): bool
+    {
+        return preg_match('/\b(?:hai|halo|hallo|pagi|siang|sore|malam|met\s+pagi|met\s+siang|met\s+sore|met\s+malam|selamat\s+pagi|selamat\s+siang|selamat\s+sore|selamat\s+malam|assalamualaikum|assalamu\s+alaikum)\b/', $text) === 1;
+    }
+
+    private function greetingPeriod(string $text, ?string $timezone = null, ?int $localHour = null): ?string
     {
         if (preg_match('/\b(?:pagi|morning)\b/', $text)) {
             return 'morning';
@@ -261,7 +231,14 @@ class AiTopicValidator
             return 'night';
         }
 
-        $hour = (int) now()->format('H');
+        $hour = $localHour;
+
+        if ($hour === null) {
+            $clock = $timezone && in_array($timezone, timezone_identifiers_list(), true)
+            ? now($timezone)
+            : now();
+            $hour = (int) $clock->format('H');
+        }
         if ($hour >= 4 && $hour < 11) {
             return 'morning';
         }

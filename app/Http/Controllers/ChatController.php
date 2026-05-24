@@ -14,7 +14,7 @@ use Illuminate\Validation\Rule;
 
 class ChatController extends Controller
 {
-    private const MESSAGE_MAX_LENGTH = 2000;
+    private const MESSAGE_MAX_LENGTH = 65536;
     private const MESSAGE_EDIT_MINUTES = 15;
     private const MESSAGE_DELETE_MINUTES = 60;
     private const MAX_MENTIONS = 10;

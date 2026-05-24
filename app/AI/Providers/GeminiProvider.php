@@ -13,7 +13,15 @@ class GeminiProvider
     public function generate(string $systemPrompt, string $message): array
     {
         $lastError = null;
-        $keys = array_values(array_filter(config('services.gemini.keys', []), fn ($key) => is_string($key) && trim($key) !== ''));
+        $configuredKeys = config('services.gemini.keys', []);
+        $keys = [];
+        if (is_array($configuredKeys)) {
+            foreach ($configuredKeys as $key) {
+                if (is_string($key) && trim($key) !== '') {
+                    $keys[] = $key;
+                }
+            }
+        }
         $maxAttempts = count($keys);
 
         if ($maxAttempts === 0) {
@@ -59,6 +67,10 @@ class GeminiProvider
 
     private function fallback(string $message): string
     {
-        return 'I can help with that WUDI task. Check your nearest deadlines, clear overdue items first, then prioritize high-impact unfinished work for today.';
+        $isIndonesian = preg_match('/\b(aku|kamu|yang|gimana|kenapa|apa|dong|nih|ya|nggak|gak|ga|capek|bingung|tugas|jadwal|cerita|curhat)\b/i', $message) === 1;
+
+        return $isIndonesian
+            ? 'Aku lagi susah nyambung ke Gemini sebentar. Coba kirim ulang sekali lagi ya, nanti aku jawab sebagai WUDI dengan lebih natural.'
+            : 'WUDI is having trouble reaching Gemini for a moment. Try sending that once more and I’ll answer more naturally.';
     }
 }
