@@ -27,6 +27,11 @@ class User extends Authenticatable implements JWTSubject
         'timezone',
         'google_id',
         'email_verified_at',
+        'status',
+        'status_reason',
+        'status_changed_at',
+        'last_seen_at',
+        'banned_at',
     ];
 
     protected $appends = ['avatar_url'];
@@ -61,6 +66,9 @@ class User extends Authenticatable implements JWTSubject
         return [
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'status_changed_at' => 'datetime',
+            'last_seen_at' => 'datetime',
+            'banned_at' => 'datetime',
         ];
     }
 

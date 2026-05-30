@@ -7,6 +7,7 @@ use App\Http\Controllers\TeamController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\AiController;
+use App\Http\Controllers\MonitoringController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
@@ -78,6 +79,16 @@ Route::middleware(['auth:api', 'throttle:api'])->group(function () {
     // Notification Settings
     Route::get('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'index']);
     Route::post('notification-settings', [\App\Http\Controllers\UserNotificationSettingController::class, 'update']);
+});
+
+// Privacy-safe monitoring events from mobile clients, including guest sessions before login.
+Route::post('monitoring/events', [MonitoringController::class, 'event'])->middleware('throttle:120,1');
+
+// Private monitoring backend. Keep behind deployment/network controls because it has no normal app login UI.
+Route::prefix('monitoring')->middleware('throttle:api')->group(function () {
+    Route::get('dashboard', [MonitoringController::class, 'dashboard']);
+    Route::get('activity', [MonitoringController::class, 'activity']);
+    Route::post('users/{user}/status', [MonitoringController::class, 'updateUserStatus']);
 });
 
 // Hybrid routes (Auth OR Device ID for Guests)

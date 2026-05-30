@@ -9,11 +9,11 @@ use Illuminate\Support\Facades\Cache;
 
 class AiTaskManagerService
 {
-    private const CREATE_WORDS = ['create', 'add', 'make', 'bikin', 'buat', 'buatkan', 'buatin', 'tambahkan', 'tambah', 'tambahin'];
-    private const EDIT_WORDS = ['edit', 'update', 'ubah', 'rubah', 'ganti', 'change', 'rename', 'reschedule', 'revisi', 'benerin', 'perbaiki', 'perbarui', 'majuin', 'mundurin'];
-    private const DELETE_WORDS = ['delete', 'remove', 'hapus', 'apus', 'buang', 'ilangin', 'hilangin'];
+    private const CREATE_WORDS = ['create', 'add', 'make', 'bikin', 'buat', 'buatkan', 'buatin', 'tambahkan', 'tambah', 'tambahin', 'catat', 'catetin', 'masukkan', 'masukin', 'simpan', 'ingetin', 'ingatkan', 'jadwalkan', 'jadwalin'];
+    private const EDIT_WORDS = ['edit', 'update', 'ubah', 'ubahin', 'rubah', 'ganti', 'gantiin', 'change', 'rename', 'reschedule', 'revisi', 'benerin', 'perbaiki', 'perbaikin', 'perbarui', 'majuin', 'mundurin', 'pindah', 'pindahin', 'geser', 'atur', 'set', 'jadikan'];
+    private const DELETE_WORDS = ['delete', 'remove', 'hapus', 'hapuskan', 'apus', 'apusin', 'buang', 'ilangin', 'hilangin', 'coret', 'coretin', 'batalin', 'cancel'];
     private const COMPLETE_WORDS = ['complete', 'finish', 'done', 'selesai', 'selese', 'beres', 'kelar', 'rampung', 'tuntas', 'udah', 'sudah'];
-    private const TASK_WORDS = ['task', 'todo', 'tugas', 'jadwal', 'reminder', 'pengingat'];
+    private const TASK_WORDS = ['task', 'todo', 'tugas', 'jadwal', 'agenda', 'reminder', 'pengingat', 'kerjaan', 'pekerjaan'];
     private const MAX_DEADLINE_YEARS = 15;
 
     public function apply(User $user, string $message): array
@@ -795,9 +795,10 @@ class AiTaskManagerService
     private function extractTitleUpdate(string $text): ?string
     {
         $patterns = [
+            '/\b(?:task|todo|tugas)?\s*(?:baru\s+)?(?:bernama|namanya|nama|judul|title)\s*(?::|=|adalah|is|jadi|dengan)?\s*(.+)$/i',
             '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update|rename|renam)\s+(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s+.+?\s+(?:jadi|to|ke|=|:)\s*(.+)$/i',
             '/\b(?:ubah|ubahin|rubah|ganti|gantiin|change|update|rename|renam)\s+(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:)?\s*(.+)$/i',
-            '/\b(?:judul|title|nama|namanya)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:|adalah|is)\s*(.+)$/i',
+            '/\b(?:judul|title|nama|namanya|bernama)(?:\s+(?:task|todo|tugas))?\s*(?:jadi|to|ke|=|:|adalah|is)?\s*(.+)$/i',
             '/\b(?:rename\s+to|renam\s+to|ganti\s+nama|ubah\s+judul)\s*(.+)$/i',
         ];
 
@@ -807,7 +808,7 @@ class AiTaskManagerService
             }
         }
 
-        $title = $this->extractField($text, ['nama', 'namanya', 'judul', 'title']);
+        $title = $this->extractField($text, ['bernama', 'nama', 'namanya', 'judul', 'title']);
         return $title === null ? null : $this->cleanFieldUpdateValue($title);
     }
 
@@ -833,7 +834,7 @@ class AiTaskManagerService
     {
         $value = trim($value, " \t\n\r\0\x0B\"'“”");
         $value = preg_replace('/^(?:task|todo|tugas)\s+(?:jadi|to|ke|=|:)\s+/i', '', $value) ?? $value;
-        $value = preg_replace('/\s+(?:deadline|tanggal|date|jam|pukul|priority|prioritas)\b.*$/i', '', $value) ?? $value;
+        $value = preg_replace('/\s*,?\s*(?:deskripsi|description|desc|deadline|tanggal|date|jam|pukul|priority|prioritas)\b.*$/i', '', $value) ?? $value;
 
         return trim($value, " \t\n\r\0\x0B\"'“”");
     }
@@ -899,30 +900,30 @@ class AiTaskManagerService
             return trim($quoted[1]);
         }
 
-        if (preg_match('/\b(?:nama(?:nya)?|judul|title)\s*(?::|=|adalah|is|jadi|dengan)?\s*(.+?)(?=\s*[,;\n]\s*(?:deskripsi|description|desc|deadline|due|tenggat|priority|prioritas)\b|$)/i', $text, $match)) {
+        if (preg_match('/\b(?:bernama|nama(?:nya)?|judul|title)\s*(?::|=|adalah|is|jadi|dengan)?\s*(.+?)(?=\s*[,;\n]\s*(?:deskripsi|description|desc|deadline|due|tenggat|priority|prioritas)\b|$)/i', $text, $match)) {
             return trim($match[1], " \t\n\r\0\x0B\"'“”");
         }
 
-        $fieldTitle = $this->extractField($text, ['nama', 'namanya', 'judul', 'title']);
+        $fieldTitle = $this->extractField($text, ['bernama', 'nama', 'namanya', 'judul', 'title']);
         if ($fieldTitle !== null) {
             return trim($fieldTitle);
         }
 
-        $title = trim(preg_replace('/\b(untuk|for|besok|tomorrow|today|hari ini|nanti|malam|pagi|siang|sore|lusa|minggu depan|akhir bulan|deadline|jam|pukul|at|high|medium|low|tinggi|sedang|rendah)\b.*$/i', '', $text));
+        $title = trim(preg_replace('/\b(baru|untuk|for|besok|tomorrow|today|hari ini|nanti|malam|pagi|siang|sore|lusa|minggu depan|akhir bulan|deskripsi|description|desc|deadline|jam|pukul|at|priority|prioritas|high|medium|mid|low|tinggi|sedang|rendah)\b.*$/i', '', $text));
 
         return trim($title) ?: trim($text);
     }
 
     private function hasStructuredTaskFields(string $text): bool
     {
-        return $this->extractField($text, ['judul', 'title', 'nama', 'namanya']) !== null
+        return $this->extractField($text, ['judul', 'title', 'bernama', 'nama', 'namanya']) !== null
             && ($this->extractField($text, ['deadline', 'due', 'tenggat']) !== null || $this->extractDeadline($text) !== null);
     }
 
     private function extractField(string $text, array $labels): ?string
     {
         $labelPattern = implode('|', array_map(fn (string $label) => preg_quote($label, '/'), $labels));
-        $stopPattern = 'judul|title|nama|namanya|deskripsi|description|desc|deadline|due|tenggat|priority|prioritas';
+        $stopPattern = 'judul|title|bernama|nama|namanya|deskripsi|description|desc|deadline|due|tenggat|priority|prioritas';
 
         if (!preg_match('/(?:^|[,;\n])\s*(?:' . $labelPattern . ')\s*(?::|=|adalah|is|jadi|dengan)?\s*(.+?)(?=\s*[,;\n]\s*(?:' . $stopPattern . ')\s*(?::|=|adalah|is|jadi|dengan)?|$)/i', $text, $match)) {
             return null;
@@ -941,7 +942,7 @@ class AiTaskManagerService
         if (str_contains($lower, 'low') || str_contains($lower, 'rendah')) {
             return 'low';
         }
-        if (str_contains($lower, 'medium') || str_contains($lower, 'sedang')) {
+        if (preg_match('/\b(medium|mid|med|sedang)\b/', $lower) === 1) {
             return 'medium';
         }
 

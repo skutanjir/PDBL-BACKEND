@@ -16,6 +16,8 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(append: [
             \App\Http\Middleware\ForceGzipResponse::class,
             \App\Http\Middleware\SyncTimezone::class,
+            \App\Http\Middleware\BlockBannedUsers::class,
+            \App\Http\Middleware\RecordApiActivity::class,
         ]);
 
         $middleware->trustProxies(at: [
