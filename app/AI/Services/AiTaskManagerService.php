@@ -16,15 +16,36 @@ class AiTaskManagerService
     private const TASK_WORDS = ['task', 'todo', 'tugas', 'jadwal', 'agenda', 'reminder', 'pengingat', 'kerjaan', 'pekerjaan'];
     private const MAX_DEADLINE_YEARS = 15;
 
+    private bool $usesEnglish = false;
+
+    private function t(string $en, string $id): string
+    {
+        return $this->usesEnglish ? $en : $id;
+    }
+
     public function apply(User $user, string $message): array
     {
         $text = $this->normalizeCasualText(trim($message));
         $lower = strtolower($text);
+        $this->usesEnglish = $this->isMostlyEnglish($lower);
 
         $draftKey = "ai:task:draft:{$user->id}";
         $pendingKey = "ai:task:pending:{$user->id}";
         $draft = Cache::get($draftKey);
         $pending = Cache::get($pendingKey);
+
+        if ($this->isBulkModificationRequest($lower)) {
+            Cache::forget($draftKey);
+            Cache::forget($pendingKey);
+            return [
+                'action' => 'unsupported_bulk_operation',
+                'kind' => 'error',
+                'note' => $this->t(
+                    "Sorry, I can't update multiple tasks at once. I can only help with one task at a time — just tell me which specific task you'd like to work with.",
+                    "Maaf, aku belum bisa mengubah semua task sekaligus. Aku hanya bisa bantu satu task per satu — sebutkan task mana yang mau kamu ubah ya 🙂"
+                ),
+            ];
+        }
 
         if ($this->hasOutOfRangeExplicitYear($text)) {
             Cache::forget($draftKey);
@@ -47,7 +68,10 @@ class AiTaskManagerService
             Cache::forget($pendingKey);
             return [
                 'action' => 'cancelled_task_action',
-                'note' => 'Oke, aku batalin dulu ya. Kalau mau lanjut, bilang lagi aja tugasnya mau diapain 👌',
+                'note' => $this->t(
+                    "Got it, cancelled! Just tell me what you'd like to do next 👌",
+                    'Oke, aku batalin dulu ya. Kalau mau lanjut, bilang lagi aja tugasnya mau diapain 👌'
+                ),
             ];
         }
 
@@ -77,7 +101,10 @@ class AiTaskManagerService
             Cache::forget($draftKey);
             return [
                 'action' => 'cancelled_task_draft',
-                'note' => 'Oke, draft-nya aku batalin ya. Kalau mau bikin lagi, tinggal sebut judul sama deadlinenya 👌',
+                'note' => $this->t(
+                    "Draft cancelled. Whenever you're ready, just tell me the title and deadline 👌",
+                    'Oke, draft-nya aku batalin ya. Kalau mau bikin lagi, tinggal sebut judul sama deadlinenya 👌'
+                ),
             ];
         }
 
@@ -202,6 +229,22 @@ class AiTaskManagerService
             }
         }
 
+        if ($this->isSummaryRequest($lower)) {
+            return $this->handleSummaryRequest($user, $lower);
+        }
+
+        if ($this->isClosestDeadlineRequest($lower)) {
+            return $this->handleClosestDeadlineRequest($user);
+        }
+
+        if ($this->isOverdueRequest($lower)) {
+            return $this->handleOverdueRequest($user);
+        }
+
+        if ($this->isActiveTaskListRequest($lower)) {
+            return $this->handleActiveTaskListRequest($user);
+        }
+
         return ['action' => null];
     }
 
@@ -225,7 +268,10 @@ class AiTaskManagerService
                     'action' => 'clarify_task_edit',
                     'kind' => 'task_action_clarify',
                     'task' => $this->taskPayload($todo),
-                    'note' => "Oke, task “{$todo->judul}”. Mau diubah apa nih? Bisa judul, deadline, priority, atau deskripsi 🙂",
+                    'note' => $this->t(
+                            "Got it, task \"{$todo->judul}\". What would you like to change? Title, deadline, priority, or description 🙂",
+                            "Oke, task “{$todo->judul}”. Mau diubah apa nih? Bisa judul, deadline, priority, atau deskripsi 🙂"
+                        ),
                 ];
             }
 
@@ -270,7 +316,10 @@ class AiTaskManagerService
                         'action' => 'clarify_task_edit',
                         'kind' => 'task_action_clarify',
                         'task' => $this->taskPayload($lastTask),
-                        'note' => "Oke, task “{$lastTask->judul}”. Mau diubah apa nih? Bisa judul, deadline, priority, atau deskripsi 🙂",
+                        'note' => $this->t(
+                                "Got it, task \"{$lastTask->judul}\". What would you like to change? Title, deadline, priority, or description 🙂",
+                                "Oke, task “{$lastTask->judul}”. Mau diubah apa nih? Bisa judul, deadline, priority, atau deskripsi 🙂"
+                            ),
                     ];
                 }
 
@@ -306,7 +355,10 @@ class AiTaskManagerService
                         'action' => 'clarify_task_edit',
                         'kind' => 'task_action_clarify',
                         'task' => $this->taskPayload($todo),
-                        'note' => "Ketemu “{$todo->judul}”. Mau edit bagian apa? Judul, deadline, priority, atau deskripsi?",
+                        'note' => $this->t(
+                                "Found \"{$todo->judul}\". What would you like to edit? Title, deadline, priority, or description?",
+                                "Ketemu “{$todo->judul}”. Mau edit bagian apa? Judul, deadline, priority, atau deskripsi?"
+                            ),
                     ];
                 }
 
@@ -413,7 +465,10 @@ class AiTaskManagerService
             'action' => 'updated_task',
             'kind' => 'task_updated',
             'task' => $this->taskPayload($todo->fresh()),
-            'note' => "Sip, “{$todo->judul}” sudah aku update ✅",
+            'note' => $this->t(
+                "Got it! \"{$todo->judul}\" has been updated ✅",
+                "Sip, “{$todo->judul}” sudah aku update ✅"
+            ),
         ];
     }
 
@@ -425,7 +480,10 @@ class AiTaskManagerService
         Cache::forget($pendingKey);
         Cache::forget("ai:context:{$user->id}");
 
-        return ['action' => 'deleted_task', 'kind' => 'task_deleted', 'note' => "Oke, task “{$title}” sudah aku hapus."];
+        return ['action' => 'deleted_task', 'kind' => 'task_deleted', 'note' => $this->t(
+            "Done! Task \"{$title}\" has been deleted.",
+            "Oke, task “{$title}” sudah aku hapus."
+        )];
     }
 
     private function confirmDeleteTask(User $user, string $pendingKey, Todo $todo): array
@@ -442,7 +500,10 @@ class AiTaskManagerService
             'action' => 'confirm_task_delete',
             'kind' => 'task_delete_confirm',
             'task' => $this->taskPayload($todo),
-            'note' => "Aku ketemu “{$todo->judul}”. Yakin mau hapus? Balas “ya hapus” untuk konfirmasi, atau “batal” kalau nggak jadi.",
+            'note' => $this->t(
+                "Found \"{$todo->judul}\". Sure you want to delete it? Reply \"delete it\" to confirm, or \"cancel\" to abort.",
+                "Aku ketemu “{$todo->judul}”. Yakin mau hapus? Balas “ya hapus” untuk konfirmasi, atau “batal” kalau nggak jadi."
+            ),
         ];
     }
 
@@ -465,7 +526,10 @@ class AiTaskManagerService
             'action' => 'confirm_task_delete',
             'kind' => 'task_delete_confirm',
             'task' => $this->taskPayload($todo),
-            'note' => "Biar aman, aku belum hapus “{$todo->judul}”. Kalau yakin, balas “ya hapus”. Kalau nggak jadi, bilang “batal”.",
+            'note' => $this->t(
+                "Just to be safe, \"{$todo->judul}\" hasn't been deleted yet. Reply \"delete it\" to confirm, or \"cancel\" to abort.",
+                "Biar aman, aku belum hapus “{$todo->judul}”. Kalau yakin, balas “ya hapus”. Kalau nggak jadi, bilang “batal”."
+            ),
         ];
     }
 
@@ -476,7 +540,10 @@ class AiTaskManagerService
         Cache::forget("ai:context:{$user->id}");
         $this->rememberTaskReference($user, $todo);
 
-        return ['action' => 'completed_task', 'kind' => 'task_completed', 'task' => $this->taskPayload($todo->fresh()), 'note' => "Sip, “{$todo->judul}” aku tandai selesai ✅"];
+        return ['action' => 'completed_task', 'kind' => 'task_completed', 'task' => $this->taskPayload($todo->fresh()), 'note' => $this->t(
+            "Done! \"{$todo->judul}\" has been marked as complete ✅",
+            "Sip, “{$todo->judul}” aku tandai selesai ✅"
+        )];
     }
 
     private function normalizeCasualText(string $text): string
@@ -867,12 +934,37 @@ class AiTaskManagerService
         return [
             'action' => 'created_task',
             'task' => $todo->fresh(),
-            'note' => "Siap, “{$todo->judul}” sudah aku buat ✅ Priority: {$todo->priority}" . ($todo->deadline ? ", deadline {$todo->deadline->format('Y-m-d H:i')}" : '') . '.',
+            'note' => $this->t(
+                "Done! \"{$todo->judul}\" has been created ✅ Priority: {$todo->priority}" . ($todo->deadline ? ", deadline {$todo->deadline->format('Y-m-d H:i')}" : '') . '.',
+                "Siap, “{$todo->judul}” sudah aku buat ✅ Priority: {$todo->priority}" . ($todo->deadline ? ", deadline {$todo->deadline->format('Y-m-d H:i')}" : '') . '.'
+            ),
         ];
     }
 
     private function draftPrompt(array $draft): string
     {
+        if ($this->usesEnglish) {
+            $summary = "Here's your draft:"
+                . "\n- Title: " . ($draft['title'] ?: 'not set')
+                . "\n- Description: " . ($draft['description'] ?: 'empty')
+                . "\n- Deadline: " . ($draft['deadline'] ?: 'not set')
+                . "\n- Priority: " . ($draft['priority'] ?: 'medium');
+
+            $missing = [];
+            if (empty($draft['title'])) {
+                $missing[] = 'title';
+            }
+            if (empty($draft['deadline'])) {
+                $missing[] = 'deadline or date/time';
+            }
+
+            if ($missing) {
+                return $summary . "\n\nStill missing: " . implode(', ', $missing) . '. Fill those in, or say "save" to save as-is. Say "cancel" to abort.';
+            }
+
+            return $summary . '\n\nReady to save? Say "save". Or send updated details to change 👌';
+        }
+
         $summary = 'Sip, draft-nya aku siapin:'
             . "\n- Judul: " . ($draft['title'] ?: 'belum ada')
             . "\n- Deskripsi: " . ($draft['description'] ?: 'kosong')
@@ -1086,6 +1178,17 @@ class AiTaskManagerService
         return false;
     }
 
+    private function isBulkModificationRequest(string $lower): bool
+    {
+        $hasBulk = preg_match('/\b(semua|all(?:\s+(?:the|my))?\s+tasks?|seluruh|setiap|tiap|semua\s+yang|all\s+(?:overdue|completed?|pending|active))\b/', $lower) === 1
+            || preg_match('/\b(semua|all)\b.*\b(tasks?|tugas|todo)\b/', $lower) === 1;
+
+        $hasModify = $this->hasFuzzyWord($lower, array_merge(self::COMPLETE_WORDS, self::DELETE_WORDS, self::EDIT_WORDS))
+            || preg_match('/\b(jadi\s+(?:done|selesai|completed?)|status(?:nya)?\s+(?:berganti|ganti|ubah|jadi)|mark\s+(?:all|as))\b/', $lower) === 1;
+
+        return $hasBulk && $hasModify;
+    }
+
     private function deadlineTooFarResponse(): array
     {
         $maxYear = now()->addYears(self::MAX_DEADLINE_YEARS)->year;
@@ -1093,7 +1196,195 @@ class AiTaskManagerService
         return [
             'action' => 'deadline_out_of_range',
             'kind' => 'validation_error',
-            'note' => "Deadline task maksimal sampai tahun {$maxYear}. Coba pilih tanggal yang masih dalam range +" . self::MAX_DEADLINE_YEARS . ' tahun ya.',
+            'note' => $this->t(
+                "Task deadline must be within " . self::MAX_DEADLINE_YEARS . " years (max: {$maxYear}). Please pick a closer date.",
+                "Deadline task maksimal sampai tahun {$maxYear}. Coba pilih tanggal yang masih dalam range +" . self::MAX_DEADLINE_YEARS . ' tahun ya.'
+            ),
+        ];
+    }
+
+    private function isSummaryRequest(string $lower): bool
+    {
+        return preg_match('/\b(summarize|summary|ringkasan|rekap|rekapitulasi|laporan|report|statistik|stats|overview|rangkuman)\b/', $lower) === 1
+            || (preg_match('/\b(berapa\s+(?:banyak|jumlah)|how\s+many|seberapa\s+banyak)\b/', $lower) === 1
+                && preg_match('/\b(task|tugas|todo)\b/', $lower) === 1);
+    }
+
+    private function isClosestDeadlineRequest(string $lower): bool
+    {
+        return preg_match('/\b(closest|nearest|paling\s+dekat|terdekat)\b.*\b(deadline|tenggat)\b/', $lower) === 1
+            || preg_match('/\b(deadline|tenggat)\b.*\b(closest|nearest|terdekat|paling\s+dekat)\b/', $lower) === 1
+            || preg_match('/\btask\b.*\b(apa|which|mana)\b.*\b(closest|nearest|paling\s+dekat|terdekat)\b.*\bdeadline\b/', $lower) === 1
+            || preg_match('/\b(what|apa)\b.*\btask\b.*\b(closest|nearest|paling\s+dekat|terdekat)\b/', $lower) === 1;
+    }
+
+    private function isOverdueRequest(string $lower): bool
+    {
+        return preg_match('/\b(overdue|terlambat|terlewat|lewat\s+deadline|sudah\s+lewat\s+(?:deadline|tenggat))\b/', $lower) === 1;
+    }
+
+    private function isActiveTaskListRequest(string $lower): bool
+    {
+        return preg_match('/\b(show|list|tampilkan|lihat|liat|view)\b.*\b(task|tugas|todo|agenda)\b/', $lower) === 1
+            || preg_match('/\b(apa\s+saja|apa\s+aja|what\s+are)\b.*\b(task|tugas|todo)\b/', $lower) === 1
+            || preg_match('/\b(daftar)\s+(task|tugas|todo)\b/', $lower) === 1;
+    }
+
+    private function handleSummaryRequest(User $user, string $lower): array
+    {
+        $now = now();
+        $isMonthly = preg_match('/\b(bulan\s+(?:ini|lalu|kemarin)|this\s+month|last\s+month|monthly)\b/', $lower) === 1;
+
+        if ($isMonthly) {
+            $start = $now->copy()->startOfMonth();
+            $end = $now->copy()->endOfMonth();
+
+            $completed = Todo::where('user_id', $user->id)->where('is_completed', true)->whereBetween('created_at', [$start, $end])->count();
+            $overdue = Todo::where('user_id', $user->id)->where('is_completed', false)->where('deadline', '<', $now)->whereBetween('created_at', [$start, $end])->count();
+            $total = Todo::where('user_id', $user->id)->whereBetween('created_at', [$start, $end])->count();
+            $unfinished = max(0, $total - $completed);
+
+            $priorityCounts = [
+                'high' => Todo::where('user_id', $user->id)->where('priority', 'high')->whereBetween('created_at', [$start, $end])->count(),
+                'medium' => Todo::where('user_id', $user->id)->where('priority', 'medium')->whereBetween('created_at', [$start, $end])->count(),
+                'low' => Todo::where('user_id', $user->id)->where('priority', 'low')->whereBetween('created_at', [$start, $end])->count(),
+            ];
+
+            return [
+                'action' => 'task_summary',
+                'kind' => 'monthly_summary',
+                'month' => $now->format('F Y'),
+                'counts' => ['completed' => $completed, 'unfinished' => $unfinished, 'overdue' => $overdue],
+                'priority_counts' => $priorityCounts,
+                'tasks' => [],
+                'note' => $this->t(
+                    "Here's your task summary for {$now->format('F Y')} 📊",
+                    "Ini rekap task kamu bulan {$now->format('F Y')} 📊"
+                ),
+            ];
+        }
+
+        $isAll = preg_match('/\b(all|semua|seluruh|keseluruhan|all\s+tasks?|semua\s+task)\b/', $lower) === 1;
+
+        if ($isAll) {
+            $completed = Todo::where('user_id', $user->id)->where('is_completed', true)->count();
+            $overdue = Todo::where('user_id', $user->id)->where('is_completed', false)->where('deadline', '<', $now)->count();
+            $unfinished = max(0, Todo::where('user_id', $user->id)->where('is_completed', false)->count() - $overdue);
+
+            $priorityCounts = [
+                'high' => Todo::where('user_id', $user->id)->where('is_completed', false)->where('priority', 'high')->count(),
+                'medium' => Todo::where('user_id', $user->id)->where('is_completed', false)->where('priority', 'medium')->count(),
+                'low' => Todo::where('user_id', $user->id)->where('is_completed', false)->where('priority', 'low')->count(),
+            ];
+
+            return [
+                'action' => 'task_summary',
+                'kind' => 'all_summary',
+                'counts' => ['completed' => $completed, 'unfinished' => $unfinished, 'overdue' => $overdue],
+                'priority_counts' => $priorityCounts,
+                'tasks' => [],
+                'note' => $this->t("Here's a summary of all your tasks 📊", "Ini ringkasan semua task kamu 📊"),
+            ];
+        }
+
+        $today = $now->toDateString();
+
+        $completed = Todo::where('user_id', $user->id)->where('is_completed', true)->whereDate('deadline', $today)->count();
+        $overdue = Todo::where('user_id', $user->id)->where('is_completed', false)->whereDate('deadline', $today)->where('deadline', '<', $now)->count();
+        $unfinished = max(0, Todo::where('user_id', $user->id)->where('is_completed', false)->whereDate('deadline', $today)->count() - $overdue);
+
+        $priorityCounts = [
+            'high' => Todo::where('user_id', $user->id)->where('is_completed', false)->whereDate('deadline', $today)->where('priority', 'high')->count(),
+            'medium' => Todo::where('user_id', $user->id)->where('is_completed', false)->whereDate('deadline', $today)->where('priority', 'medium')->count(),
+            'low' => Todo::where('user_id', $user->id)->where('is_completed', false)->whereDate('deadline', $today)->where('priority', 'low')->count(),
+        ];
+
+        return [
+            'action' => 'task_summary',
+            'kind' => 'summary',
+            'counts' => ['completed' => $completed, 'unfinished' => $unfinished, 'overdue' => $overdue],
+            'priority_counts' => $priorityCounts,
+            'tasks' => [],
+            'note' => $this->t("Here's your task summary for today 📊", "Ini ringkasan task kamu hari ini 📊"),
+        ];
+    }
+
+    private function handleClosestDeadlineRequest(User $user): array
+    {
+        $task = Todo::where('user_id', $user->id)
+            ->where('is_completed', false)
+            ->whereNotNull('deadline')
+            ->orderBy('deadline')
+            ->first();
+
+        if (!$task) {
+            return [
+                'action' => 'task_summary',
+                'kind' => 'empty_state',
+                'title' => $this->t('No upcoming deadlines', 'Tidak ada deadline yang mendekat'),
+                'note' => $this->t("You have no pending tasks with deadlines — all clear! 🎉", "Tidak ada task yang punya deadline aktif. Bersih banget! 🎉"),
+            ];
+        }
+
+        $this->rememberTaskReference($user, $task);
+        return [
+            'action' => 'task_summary',
+            'kind' => 'closest_deadline',
+            'task' => $this->taskPayload($task),
+            'note' => $this->t(
+                "The task closest to its deadline is \"{$task->judul}\" 📅",
+                "Task yang paling dekat deadlinenya adalah \"{$task->judul}\" 📅"
+            ),
+        ];
+    }
+
+    private function handleOverdueRequest(User $user): array
+    {
+        $tasks = Todo::where('user_id', $user->id)
+            ->where('is_completed', false)
+            ->where('deadline', '<', now())
+            ->orderBy('deadline')
+            ->limit(10)
+            ->get();
+
+        if ($tasks->isEmpty()) {
+            return [
+                'action' => 'task_summary',
+                'kind' => 'empty_state',
+                'title' => $this->t('No overdue tasks', 'Tidak ada task overdue'),
+                'note' => $this->t("No overdue tasks — you're right on track! 🙌", "Tidak ada task yang overdue. Kamu keren! 🙌"),
+            ];
+        }
+
+        return [
+            'action' => 'task_summary',
+            'kind' => 'overdue_tasks',
+            'tasks' => $tasks->map(fn($t) => $this->taskPayload($t))->values()->all(),
+            'note' => $this->t(
+                "You have {$tasks->count()} overdue task(s) 👇",
+                "Ada {$tasks->count()} task yang sudah overdue nih 👇"
+            ),
+        ];
+    }
+
+    private function handleActiveTaskListRequest(User $user): array
+    {
+        $tasks = $this->activeTasks($user, 8);
+
+        if ($tasks->isEmpty()) {
+            return [
+                'action' => 'task_summary',
+                'kind' => 'empty_state',
+                'title' => $this->t('No active tasks', 'Belum ada task aktif'),
+                'note' => $this->t("You have no active tasks right now. Want to add one?", "Kamu belum punya task aktif. Mau bikin satu?"),
+            ];
+        }
+
+        return [
+            'action' => 'task_summary',
+            'kind' => 'task_list',
+            'tasks' => $tasks->map(fn($t) => $this->taskPayload($t))->values()->all(),
+            'note' => $this->t("Here are your active tasks 📋", "Ini task-task aktif kamu 📋"),
         ];
     }
 }
