@@ -140,29 +140,33 @@ class MonitoringService
 
     public function recordApiActivity(Request $request, int $statusCode, int $durationMs, bool $blocked = false): void
     {
-        $user = auth('api')->user();
-        $path = '/' . ltrim($request->path(), '/');
+        try {
+            $user = auth('api')->user();
+            $path = '/' . ltrim($request->path(), '/');
 
-        ApiActivityLog::create([
-            'user_id' => $user?->id,
-            'device_id' => $request->header('X-Device-ID') ?: $request->input('device_id'),
-            'method' => $request->method(),
-            'path' => $path,
-            'route_name' => $request->route()?->getName(),
-            'status_code' => $statusCode,
-            'duration_ms' => $durationMs,
-            'ip_address' => $request->ip(),
-            'user_agent' => $request->userAgent(),
-            'action' => $this->actionFromRequest($request),
-            'blocked' => $blocked,
-            'rate_limited' => $statusCode === 429,
-            'suspicious' => $this->isSuspicious($request, $statusCode),
-            'metadata' => [
-                'privacy_safe' => true,
-                'query_keys' => array_keys($request->query()),
-            ],
-            'occurred_at' => now(),
-        ]);
+            ApiActivityLog::create([
+                'user_id' => $user?->id,
+                'device_id' => $request->header('X-Device-ID') ?: $request->input('device_id'),
+                'method' => $request->method(),
+                'path' => $path,
+                'route_name' => $request->route()?->getName(),
+                'status_code' => $statusCode,
+                'duration_ms' => $durationMs,
+                'ip_address' => $request->ip(),
+                'user_agent' => $request->userAgent(),
+                'action' => $this->actionFromRequest($request),
+                'blocked' => $blocked,
+                'rate_limited' => $statusCode === 429,
+                'suspicious' => $this->isSuspicious($request, $statusCode),
+                'metadata' => [
+                    'privacy_safe' => true,
+                    'query_keys' => array_keys($request->query()),
+                ],
+                'occurred_at' => now(),
+            ]);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('MonitoringService::recordApiActivity failed: ' . $e->getMessage());
+        }
     }
 
     public function audit(Request $request, string $action, ?User $target = null, array $metadata = []): void

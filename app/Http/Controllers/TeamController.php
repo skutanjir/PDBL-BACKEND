@@ -99,8 +99,8 @@ class TeamController extends Controller
             return response()->json(['message' => "Team is full. Maximum capacity is {$team->max_members} members."], 422);
         }
 
-        if ($team->members()->where('user_id', $userToInvite->id)->where('status', '!=', 'declined')->exists()) {
-            $membership = $team->members()->where('user_id', $userToInvite->id)->first();
+        if ($team->members()->where('users.id', $userToInvite->id)->wherePivot('status', '!=', 'declined')->exists()) {
+            $membership = $team->members()->where('users.id', $userToInvite->id)->first();
             if ($membership->pivot->status === 'banned') {
                 return response()->json(['message' => 'This user is banned from this team'], 422);
             }
@@ -142,7 +142,7 @@ class TeamController extends Controller
         /** @var \App\Models\User $user */
         $user = auth('api')->user();
         
-        $membership = $team->members()->where('user_id', $user->id)->first();
+        $membership = $team->members()->where('users.id', $user->id)->first();
         
         if (!$membership || $membership->pivot->status !== 'pending') {
             return response()->json(['message' => 'No pending invitation found'], 404);
@@ -163,7 +163,7 @@ class TeamController extends Controller
         /** @var \App\Models\User $user */
         $user = auth('api')->user();
         
-        $membership = $team->members()->where('user_id', $user->id)->first();
+        $membership = $team->members()->where('users.id', $user->id)->first();
         
         if (!$membership || $membership->pivot->status !== 'pending') {
             return response()->json(['message' => 'No pending invitation found'], 404);
@@ -180,7 +180,7 @@ class TeamController extends Controller
     {
         /** @var \App\Models\User $user */
         $user = auth('api')->user();
-        $isMember = $team->members()->where('user_id', $user->id)->where('status', 'accepted')->exists();
+        $isMember = $team->members()->where('users.id', $user->id)->wherePivot('status', 'accepted')->exists();
 
         if (!$isMember) {
             return response()->json(['message' => 'Unauthorized'], 403);

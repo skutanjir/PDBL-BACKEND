@@ -9,21 +9,41 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('chat_messages', function (Blueprint $table) {
-            $table->foreignId('reply_to_id')->nullable()->after('sender_id')->constrained('chat_messages')->nullOnDelete();
-            $table->timestamp('edited_at')->nullable()->after('mentions_all');
-            $table->timestamp('deleted_at')->nullable()->after('edited_at');
-            $table->foreignId('deleted_by_id')->nullable()->after('deleted_at')->constrained('users')->nullOnDelete();
-            $table->string('delete_reason')->nullable()->after('deleted_by_id');
-            $table->index(['chat_conversation_id', 'deleted_at']);
+            if (!Schema::hasColumn('chat_messages', 'reply_to_id')) {
+                $table->foreignId('reply_to_id')->nullable()->after('sender_id')->constrained('chat_messages')->nullOnDelete();
+            }
+            if (!Schema::hasColumn('chat_messages', 'edited_at')) {
+                $table->timestamp('edited_at')->nullable()->after('mentions_all');
+            }
+            if (!Schema::hasColumn('chat_messages', 'deleted_at')) {
+                $table->timestamp('deleted_at')->nullable()->after('edited_at');
+            }
+            if (!Schema::hasColumn('chat_messages', 'deleted_by_id')) {
+                $table->foreignId('deleted_by_id')->nullable()->after('deleted_at')->constrained('users')->nullOnDelete();
+            }
+            if (!Schema::hasColumn('chat_messages', 'delete_reason')) {
+                $table->string('delete_reason')->nullable()->after('deleted_by_id');
+            }
         });
 
-        Schema::create('chat_message_user_deletions', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('chat_message_id')->constrained('chat_messages')->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->timestamps();
-            $table->unique(['chat_message_id', 'user_id']);
-        });
+        // Add index only if it doesn't already exist
+        try {
+            Schema::table('chat_messages', function (Blueprint $table) {
+                $table->index(['chat_conversation_id', 'deleted_at']);
+            });
+        } catch (\Throwable) {
+            // Index already exists — safe to ignore
+        }
+
+        if (!Schema::hasTable('chat_message_user_deletions')) {
+            Schema::create('chat_message_user_deletions', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('chat_message_id')->constrained('chat_messages')->cascadeOnDelete();
+                $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+                $table->timestamps();
+                $table->unique(['chat_message_id', 'user_id']);
+            });
+        }
     }
 
     public function down(): void

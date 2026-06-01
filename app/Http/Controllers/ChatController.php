@@ -10,6 +10,7 @@ use App\Jobs\SendPushNotification;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\Rule;
 
 class ChatController extends Controller
@@ -129,7 +130,7 @@ class ChatController extends Controller
         return response()->json(['message' => 'Conversation marked as read']);
     }
 
-    public function messages(ChatConversation $conversation)
+    public function messages(Request $request, ChatConversation $conversation)
     {
         $user = auth('api')->user();
         if ($conversation->type === 'team') {
@@ -138,21 +139,36 @@ class ChatController extends Controller
             abort(403, 'Unauthorized');
         }
 
-        $hiddenIds = DB::table('chat_message_user_deletions')
-            ->where('user_id', $user->id)
-            ->pluck('chat_message_id')
-            ->all();
+        $hiddenIds = Schema::hasTable('chat_message_user_deletions')
+            ? DB::table('chat_message_user_deletions')
+                ->where('user_id', $user->id)
+                ->pluck('chat_message_id')
+                ->all()
+            : [];
 
-        $messages = $conversation->messages()
+        $limit = min(max((int) $request->query('limit', 100), 1), 100);
+        $beforeId = $request->query('before_id');
+
+        $query = $conversation->messages()
             ->whereNotIn('id', $hiddenIds)
             ->with(['sender:id,name,email,avatar', 'replyTo.sender:id,name'])
-            ->orderBy('created_at')
-            ->limit(100)
-            ->get()
+            ->when($beforeId, fn ($query) => $query->where('id', '<', (int) $beforeId))
+            ->orderByDesc('created_at')
+            ->orderByDesc('id');
+
+        $page = $query->limit($limit + 1)->get();
+        $hasMore = $page->count() > $limit;
+
+        $messages = $page
+            ->take($limit)
+            ->reverse()
             ->map(fn ($message) => $this->formatMessage($message))
             ->values();
 
-        return response()->json(['messages' => $messages]);
+        return response()->json([
+            'messages' => $messages,
+            'has_more' => $hasMore,
+        ]);
     }
 
     public function send(Request $request, ChatConversation $conversation)
@@ -217,7 +233,7 @@ class ChatController extends Controller
         $notificationBody = $body;
 
         if ($team) {
-            $recipients = $team->members()->where('user_id', '!=', $user->id)->wherePivot('status', 'accepted')->get();
+            $recipients = $team->members()->where('users.id', '!=', $user->id)->wherePivot('status', 'accepted')->get();
         } else {
             $recipients = $conversation->participants()->where('user_id', '!=', $user->id)->get();
         }
@@ -401,7 +417,7 @@ class ChatController extends Controller
         $user = auth('api')->user();
         $team = $conversation->team;
 
-        if (!$team || !$team->members()->where('user_id', $user->id)->where('status', 'accepted')->exists()) {
+        if (!$team || !$team->members()->where('users.id', $user->id)->wherePivot('status', 'accepted')->exists()) {
             abort(403, 'Unauthorized');
         }
 
