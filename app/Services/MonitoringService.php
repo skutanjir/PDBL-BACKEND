@@ -221,11 +221,14 @@ class MonitoringService
             ],
             'tasks' => [
                 'created' => $this->tableCount('todos'),
+                'created_today' => $this->todoCreatedCount($now->copy()->startOfDay()),
+                'created_this_month' => $this->todoCreatedCount($monthStart),
                 'completed' => $this->todoCompletedCount(),
                 'incomplete' => $this->todoIncompleteCount(),
                 'monthly_completed' => $monthlyCompleted,
                 'monthly_productivity_growth_percent' => $this->growth($monthlyCompleted, $previousCompleted),
                 'team_distribution' => $this->taskTeamDistribution(),
+                'created_this_month_series' => $this->taskCreatedSeries($monthStart, $now),
             ],
             'chat' => [
                 'messages' => $this->tableCount('chat_messages'),
@@ -294,6 +297,20 @@ class MonitoringService
         return Schema::hasTable($table) ? DB::table($table)->count() : 0;
     }
 
+    private function todoCreatedCount(?Carbon $from = null, ?Carbon $to = null): int
+    {
+        if (!$this->tableReady('todos', ['created_at'])) {
+            return 0;
+        }
+
+        $query = DB::table('todos');
+        if ($from) {
+            $to ? $query->whereBetween('created_at', [$from, $to]) : $query->where('created_at', '>=', $from);
+        }
+
+        return $query->count();
+    }
+
     private function todoCompletedCount(?Carbon $from = null, ?Carbon $to = null): int
     {
         if (!$this->tableReady('todos', ['is_completed'])) {
@@ -311,6 +328,29 @@ class MonitoringService
     private function todoIncompleteCount(): int
     {
         return $this->tableReady('todos', ['is_completed']) ? DB::table('todos')->where('is_completed', false)->count() : 0;
+    }
+
+    private function taskCreatedSeries(Carbon $start, Carbon $end): array
+    {
+        if (!$this->tableReady('todos', ['created_at'])) {
+            return [];
+        }
+
+        $rows = DB::table('todos')
+            ->whereBetween('created_at', [$start->copy()->startOfDay(), $end->copy()->endOfDay()])
+            ->get(['created_at'])
+            ->groupBy(fn ($item) => Carbon::parse($item->created_at)->toDateString());
+
+        $series = [];
+        for ($day = $start->copy()->startOfDay(); $day <= $end->copy()->startOfDay(); $day->addDay()) {
+            $key = $day->toDateString();
+            $series[] = [
+                'label' => $day->format('d M'),
+                'tasks' => collect($rows->get($key, []))->count(),
+            ];
+        }
+
+        return $series;
     }
 
     private function taskTeamDistribution(): array
