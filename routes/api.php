@@ -88,6 +88,7 @@ Route::post('monitoring/events', [MonitoringController::class, 'event'])->middle
 Route::prefix('monitoring')->middleware('throttle:api')->group(function () {
     Route::get('dashboard', [MonitoringController::class, 'dashboard']);
     Route::get('activity', [MonitoringController::class, 'activity']);
+    Route::get('users', [MonitoringController::class, 'users']);
     Route::post('users/{user}/status', [MonitoringController::class, 'updateUserStatus']);
 });
 

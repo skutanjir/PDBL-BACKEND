@@ -12,7 +12,6 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Storage;
 
 class MonitoringService
 {
@@ -51,6 +50,10 @@ class MonitoringService
 
     public function recordMobileEvent(Request $request, ?User $user = null): MonitoringEvent
     {
+        if (!$this->tableReady('monitoring_events')) {
+            return new MonitoringEvent((array) $request->input());
+        }
+
         $metadata = $this->safeMetadata((array) $request->input('metadata', []));
         $eventType = (string) $request->input('event_type');
         if (!in_array($eventType, self::SAFE_EVENT_TYPES, true)) {
@@ -83,7 +86,7 @@ class MonitoringService
     public function touchSession(Request $request, ?User $user = null): void
     {
         $sessionKey = $request->input('session_key');
-        if (!$sessionKey) {
+        if (!$sessionKey || !$this->tableReady('user_sessions', ['session_key'])) {
             return;
         }
 
@@ -108,7 +111,7 @@ class MonitoringService
             'metadata' => $this->safeMetadata((array) $request->input('session_metadata', [])),
         ])->save();
 
-        if ($user) {
+        if ($user && Schema::hasColumn('users', 'last_seen_at')) {
             $user->forceFill(['last_seen_at' => $now])->save();
         }
     }
@@ -116,7 +119,7 @@ class MonitoringService
     public function touchDevice(Request $request, ?User $user = null): void
     {
         $deviceId = $request->input('device_id') ?: $request->header('X-Device-ID');
-        if (!$user && !$deviceId) {
+        if ((!$user && !$deviceId) || !$this->tableReady('user_device_histories')) {
             return;
         }
 
@@ -140,6 +143,10 @@ class MonitoringService
 
     public function recordApiActivity(Request $request, int $statusCode, int $durationMs, bool $blocked = false): void
     {
+        if (!$this->tableReady('api_activity_logs')) {
+            return;
+        }
+
         try {
             $user = auth('api')->user();
             $path = '/' . ltrim($request->path(), '/');
@@ -171,6 +178,10 @@ class MonitoringService
 
     public function audit(Request $request, string $action, ?User $target = null, array $metadata = []): void
     {
+        if (!$this->tableReady('audit_logs')) {
+            return;
+        }
+
         $actor = auth('api')->user();
         AuditLog::create([
             'actor_user_id' => $actor?->id,
@@ -192,8 +203,8 @@ class MonitoringService
         $previousMonthStart = $now->copy()->subMonthNoOverflow()->startOfMonth();
         $previousMonthEnd = $now->copy()->subMonthNoOverflow()->endOfMonth();
 
-        $monthlyCompleted = DB::table('todos')->where('is_completed', true)->where('updated_at', '>=', $monthStart)->count();
-        $previousCompleted = DB::table('todos')->where('is_completed', true)->whereBetween('updated_at', [$previousMonthStart, $previousMonthEnd])->count();
+        $monthlyCompleted = $this->todoCompletedCount($monthStart);
+        $previousCompleted = $this->todoCompletedCount($previousMonthStart, $previousMonthEnd);
 
         return [
             'privacy_safe' => true,
@@ -202,41 +213,46 @@ class MonitoringService
                 'daily' => $this->activeUsers($now->copy()->startOfDay()),
                 'monthly' => $this->activeUsers($monthStart),
                 'yearly' => $this->activeUsers($now->copy()->startOfYear()),
-                'inactive_30_days' => User::where(function ($query) use ($now) {
-                    $query->whereNull('last_seen_at')->orWhere('last_seen_at', '<', $now->copy()->subDays(30));
-                })->count(),
+                'inactive_30_days' => $this->inactiveUsers($now->copy()->subDays(30)),
             ],
             'sessions' => [
-                'average_duration_seconds' => (int) UserSession::where('started_at', '>=', $monthStart)->avg('duration_seconds'),
-                'total_duration_seconds' => (int) UserSession::where('started_at', '>=', $monthStart)->sum('duration_seconds'),
+                'average_duration_seconds' => $this->sessionAverageDuration($monthStart),
+                'total_duration_seconds' => $this->sessionTotalDuration($monthStart),
             ],
             'tasks' => [
-                'created' => DB::table('todos')->count(),
-                'completed' => DB::table('todos')->where('is_completed', true)->count(),
-                'incomplete' => DB::table('todos')->where('is_completed', false)->count(),
+                'created' => $this->tableCount('todos'),
+                'completed' => $this->todoCompletedCount(),
+                'incomplete' => $this->todoIncompleteCount(),
                 'monthly_completed' => $monthlyCompleted,
                 'monthly_productivity_growth_percent' => $this->growth($monthlyCompleted, $previousCompleted),
-                'team_distribution' => DB::table('todos')->select('team_id', DB::raw('count(*) as total'))->whereNotNull('team_id')->groupBy('team_id')->limit(20)->get(),
+                'team_distribution' => $this->taskTeamDistribution(),
             ],
             'chat' => [
-                'messages' => Schema::hasTable('chat_messages') ? DB::table('chat_messages')->count() : 0,
-                'active_chat_users' => Schema::hasTable('chat_messages') ? DB::table('chat_messages')->where('created_at', '>=', $monthStart)->distinct('sender_id')->count('sender_id') : 0,
-                'ai_requests' => Schema::hasTable('ai_request_logs') ? DB::table('ai_request_logs')->where('created_at', '>=', $monthStart)->count() : 0,
-                'ai_tokens_estimate' => Schema::hasTable('ai_request_logs') ? (int) DB::table('ai_request_logs')->where('created_at', '>=', $monthStart)->sum(DB::raw('prompt_tokens_estimate + response_tokens_estimate')) : 0,
+                'messages' => $this->tableCount('chat_messages'),
+                'active_chat_users' => $this->activeChatUsers($monthStart),
+                'ai_requests' => $this->tableReady('ai_request_logs', ['created_at']) ? DB::table('ai_request_logs')->where('created_at', '>=', $monthStart)->count() : 0,
+                'ai_tokens_estimate' => $this->aiTokensEstimate($monthStart),
             ],
             'api' => [
-                'requests_today' => ApiActivityLog::where('occurred_at', '>=', $now->copy()->startOfDay())->count(),
-                'average_latency_ms' => (int) ApiActivityLog::where('occurred_at', '>=', $now->copy()->startOfDay())->avg('duration_ms'),
+                'requests_today' => $this->apiCount($now->copy()->startOfDay()),
+                'average_latency_ms' => $this->apiAverageLatency($now->copy()->startOfDay()),
                 'error_rate_percent' => $this->apiErrorRate($now->copy()->startOfDay()),
                 'failed_login_rate' => $this->failedLoginRate($now->copy()->startOfDay()),
-                'slow_requests' => ApiActivityLog::where('duration_ms', '>=', 1000)->latest()->limit(20)->get(),
+                'slow_requests' => $this->slowRequests(),
+                'latency_series' => $this->apiLatencySeries($now->copy()->subMinutes(60), 20),
+            ],
+            'charts' => [
+                'last_7_days' => $this->dailySeries($now->copy()->subDays(6), $now),
+                'this_month' => $this->dailySeries($monthStart, $now),
+                'this_year' => $this->monthlySeries($now->copy()->startOfYear(), $now),
             ],
             'security' => [
-                'flagged_users' => User::where('status', 'flagged')->count(),
-                'warning_users' => User::where('status', 'warning')->count(),
-                'banned_users' => User::where('status', 'banned')->count(),
-                'suspicious_events' => ApiActivityLog::where('suspicious', true)->where('occurred_at', '>=', $now->copy()->subDay())->count(),
-                'device_count' => UserDeviceHistory::count(),
+                'flagged_users' => $this->userStatusCount('flagged'),
+                'warning_users' => $this->userStatusCount('warning'),
+                'banned_users' => $this->userStatusCount('banned'),
+                'blocked_requests' => $this->apiBooleanCount('blocked', $now->copy()->subDay()),
+                'suspicious_events' => $this->apiBooleanCount('suspicious', $now->copy()->subDay()),
+                'device_count' => $this->tableCount('user_device_histories'),
             ],
             'retention' => [
                 'weekly_cohort_percent' => $this->retentionPercent($now->copy()->subDays(7), $now->copy()->subDays(14)),
@@ -249,8 +265,8 @@ class MonitoringService
                     'error_rate_target_percent' => 1,
                 ],
                 'jobs' => [
-                    'pending' => Schema::hasTable('jobs') ? DB::table('jobs')->count() : 0,
-                    'failed' => Schema::hasTable('failed_jobs') ? DB::table('failed_jobs')->count() : 0,
+                    'pending' => $this->tableCount('jobs'),
+                    'failed' => $this->tableCount('failed_jobs'),
                 ],
                 'database' => $this->databaseGrowth(),
                 'storage' => $this->storageUsage(),
@@ -258,11 +274,169 @@ class MonitoringService
         ];
     }
 
+    private function tableReady(string $table, array $columns = []): bool
+    {
+        if (!Schema::hasTable($table)) {
+            return false;
+        }
+
+        foreach ($columns as $column) {
+            if (!Schema::hasColumn($table, $column)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function tableCount(string $table): int
+    {
+        return Schema::hasTable($table) ? DB::table($table)->count() : 0;
+    }
+
+    private function todoCompletedCount(?Carbon $from = null, ?Carbon $to = null): int
+    {
+        if (!$this->tableReady('todos', ['is_completed'])) {
+            return 0;
+        }
+
+        $query = DB::table('todos')->where('is_completed', true);
+        if ($from && $this->tableReady('todos', ['updated_at'])) {
+            $to ? $query->whereBetween('updated_at', [$from, $to]) : $query->where('updated_at', '>=', $from);
+        }
+
+        return $query->count();
+    }
+
+    private function todoIncompleteCount(): int
+    {
+        return $this->tableReady('todos', ['is_completed']) ? DB::table('todos')->where('is_completed', false)->count() : 0;
+    }
+
+    private function taskTeamDistribution(): array
+    {
+        if (!$this->tableReady('todos', ['team_id'])) {
+            return [];
+        }
+
+        return DB::table('todos')
+            ->select('team_id', DB::raw('count(*) as total'))
+            ->whereNotNull('team_id')
+            ->groupBy('team_id')
+            ->limit(20)
+            ->get()
+            ->all();
+    }
+
+    private function inactiveUsers(Carbon $before): int
+    {
+        if (!$this->tableReady('users', ['last_seen_at'])) {
+            return 0;
+        }
+
+        return User::where(function ($query) use ($before) {
+            $query->whereNull('last_seen_at')->orWhere('last_seen_at', '<', $before);
+        })->count();
+    }
+
     private function activeUsers(Carbon $since): int
     {
-        return User::where('last_seen_at', '>=', $since)
-            ->orWhereIn('id', UserSession::where('last_seen_at', '>=', $since)->select('user_id'))
-            ->count();
+        $query = User::query();
+        $hasUserLastSeen = $this->tableReady('users', ['last_seen_at']);
+        $hasSessions = $this->tableReady('user_sessions', ['last_seen_at', 'user_id']);
+
+        if (!$hasUserLastSeen && !$hasSessions) {
+            return 0;
+        }
+
+        $query->where(function ($users) use ($since, $hasUserLastSeen, $hasSessions) {
+            if ($hasUserLastSeen) {
+                $users->where('last_seen_at', '>=', $since);
+            }
+
+            if ($hasSessions) {
+                $method = $hasUserLastSeen ? 'orWhereIn' : 'whereIn';
+                $users->{$method}('id', UserSession::where('last_seen_at', '>=', $since)->whereNotNull('user_id')->select('user_id'));
+            }
+        });
+
+        return $query->count();
+    }
+
+    private function sessionAverageDuration(Carbon $since): int
+    {
+        if (!$this->tableReady('user_sessions', ['started_at', 'duration_seconds'])) {
+            return 0;
+        }
+
+        return (int) UserSession::where('started_at', '>=', $since)->avg('duration_seconds');
+    }
+
+    private function sessionTotalDuration(Carbon $since): int
+    {
+        if (!$this->tableReady('user_sessions', ['started_at', 'duration_seconds'])) {
+            return 0;
+        }
+
+        return (int) UserSession::where('started_at', '>=', $since)->sum('duration_seconds');
+    }
+
+    private function activeChatUsers(Carbon $since): int
+    {
+        if (!$this->tableReady('chat_messages', ['created_at', 'sender_id'])) {
+            return 0;
+        }
+
+        return DB::table('chat_messages')->where('created_at', '>=', $since)->distinct('sender_id')->count('sender_id');
+    }
+
+    private function aiTokensEstimate(Carbon $since): int
+    {
+        if (!$this->tableReady('ai_request_logs', ['created_at', 'prompt_tokens_estimate', 'response_tokens_estimate'])) {
+            return 0;
+        }
+
+        return (int) DB::table('ai_request_logs')
+            ->where('created_at', '>=', $since)
+            ->get(['prompt_tokens_estimate', 'response_tokens_estimate'])
+            ->sum(fn ($row) => (int) $row->prompt_tokens_estimate + (int) $row->response_tokens_estimate);
+    }
+
+    private function apiCount(Carbon $since): int
+    {
+        return $this->tableReady('api_activity_logs', ['occurred_at']) ? ApiActivityLog::where('occurred_at', '>=', $since)->count() : 0;
+    }
+
+    private function apiAverageLatency(Carbon $since): int
+    {
+        if (!$this->tableReady('api_activity_logs', ['occurred_at', 'duration_ms'])) {
+            return 0;
+        }
+
+        return (int) ApiActivityLog::where('occurred_at', '>=', $since)->avg('duration_ms');
+    }
+
+    private function slowRequests(): array
+    {
+        if (!$this->tableReady('api_activity_logs', ['duration_ms', 'occurred_at'])) {
+            return [];
+        }
+
+        return ApiActivityLog::where('duration_ms', '>=', 1000)->latest('occurred_at')->limit(20)->get()->all();
+    }
+
+    private function userStatusCount(string $status): int
+    {
+        return $this->tableReady('users', ['status']) ? User::where('status', $status)->count() : 0;
+    }
+
+    private function apiBooleanCount(string $column, Carbon $since): int
+    {
+        if (!$this->tableReady('api_activity_logs', [$column, 'occurred_at'])) {
+            return 0;
+        }
+
+        return ApiActivityLog::where($column, true)->where('occurred_at', '>=', $since)->count();
     }
 
     private function growth(int $current, int $previous): float
@@ -273,8 +447,84 @@ class MonitoringService
         return round((($current - $previous) / $previous) * 100, 2);
     }
 
+    private function dailySeries(Carbon $start, Carbon $end): array
+    {
+        $rows = $this->apiRowsBetween($start->copy()->startOfDay(), $end->copy()->endOfDay())
+            ->groupBy(fn ($item) => optional($item->occurred_at)->toDateString());
+
+        $series = [];
+        for ($day = $start->copy()->startOfDay(); $day <= $end->copy()->startOfDay(); $day->addDay()) {
+            $key = $day->toDateString();
+            $group = collect($rows->get($key, []));
+            $series[] = [
+                'label' => $day->format('d M'),
+                'requests' => $group->count(),
+                'latency' => (int) $group->avg(fn ($item) => (int) $item->duration_ms),
+            ];
+        }
+
+        return $series;
+    }
+
+    private function monthlySeries(Carbon $start, Carbon $end): array
+    {
+        $rows = $this->apiRowsBetween($start->copy()->startOfMonth(), $end->copy()->endOfMonth())
+            ->groupBy(fn ($item) => optional($item->occurred_at)->format('Y-m'));
+
+        $series = [];
+        for ($month = $start->copy()->startOfMonth(); $month <= $end->copy()->startOfMonth(); $month->addMonth()) {
+            $key = $month->format('Y-m');
+            $group = collect($rows->get($key, []));
+            $series[] = [
+                'label' => $month->format('M Y'),
+                'requests' => $group->count(),
+                'latency' => (int) $group->avg(fn ($item) => (int) $item->duration_ms),
+            ];
+        }
+
+        return $series;
+    }
+
+    private function apiRowsBetween(Carbon $start, Carbon $end)
+    {
+        if (!$this->tableReady('api_activity_logs', ['occurred_at', 'duration_ms'])) {
+            return collect();
+        }
+
+        return ApiActivityLog::whereBetween('occurred_at', [$start, $end])->get(['duration_ms', 'occurred_at']);
+    }
+
+    private function apiLatencySeries(Carbon $since, int $limit): array
+    {
+        if (!$this->tableReady('api_activity_logs', ['occurred_at', 'duration_ms'])) {
+            return [];
+        }
+
+        $columns = collect(['id', 'user_id', 'status_code', 'duration_ms', 'path', 'occurred_at'])
+            ->filter(fn ($column) => Schema::hasColumn('api_activity_logs', $column))
+            ->values()
+            ->all();
+
+        return ApiActivityLog::where('occurred_at', '>=', $since)
+            ->oldest('occurred_at')
+            ->limit($limit)
+            ->get($columns)
+            ->map(fn ($item) => [
+                'label' => optional($item->occurred_at)->format('H:i') ?? '-',
+                'latency' => (int) ($item->duration_ms ?? 0),
+                'status_code' => $item->status_code ?? null,
+                'user_id' => $item->user_id ?? null,
+                'path' => $item->path ?? null,
+            ])
+            ->all();
+    }
+
     private function apiErrorRate(Carbon $since): float
     {
+        if (!$this->tableReady('api_activity_logs', ['occurred_at', 'status_code'])) {
+            return 0.0;
+        }
+
         $total = ApiActivityLog::where('occurred_at', '>=', $since)->count();
         if ($total === 0) return 0.0;
         $errors = ApiActivityLog::where('occurred_at', '>=', $since)->where('status_code', '>=', 400)->count();
@@ -283,6 +533,10 @@ class MonitoringService
 
     private function failedLoginRate(Carbon $since): float
     {
+        if (!$this->tableReady('api_activity_logs', ['occurred_at', 'path', 'status_code'])) {
+            return 0.0;
+        }
+
         $attempts = ApiActivityLog::where('occurred_at', '>=', $since)->where('path', 'like', '%login%')->count();
         if ($attempts === 0) return 0.0;
         $failed = ApiActivityLog::where('occurred_at', '>=', $since)->where('path', 'like', '%login%')->where('status_code', '>=', 400)->count();
@@ -291,6 +545,10 @@ class MonitoringService
 
     private function retentionPercent(Carbon $activeSince, Carbon $cohortSince): float
     {
+        if (!$this->tableReady('users', ['created_at']) || !$this->tableReady('user_sessions', ['user_id', 'last_seen_at'])) {
+            return 0.0;
+        }
+
         $cohort = User::where('created_at', '>=', $cohortSince)->where('created_at', '<', $activeSince)->pluck('id');
         if ($cohort->isEmpty()) return 0.0;
         $retained = UserSession::whereIn('user_id', $cohort)->where('last_seen_at', '>=', $activeSince)->distinct('user_id')->count('user_id');
@@ -307,8 +565,8 @@ class MonitoringService
 
     private function storageUsage(): array
     {
-        $avatars = DB::table('users')->whereNotNull('avatar')->count();
-        $teamAvatars = Schema::hasTable('teams') ? DB::table('teams')->whereNotNull('avatar')->count() : 0;
+        $avatars = $this->tableReady('users', ['avatar']) ? DB::table('users')->whereNotNull('avatar')->count() : 0;
+        $teamAvatars = $this->tableReady('teams', ['avatar']) ? DB::table('teams')->whereNotNull('avatar')->count() : 0;
         return ['avatar_records' => $avatars, 'team_avatar_records' => $teamAvatars, 'disk' => config('filesystems.default')];
     }
 
@@ -326,7 +584,7 @@ class MonitoringService
     {
         $blocked = ['message', 'body', 'content', 'password', 'token', 'authorization', 'otp', 'secret'];
         return collect($metadata)
-            ->reject(fn ($value, $key) => in_array(strtolower((string) $key), $blocked, true))
+            ->reject(fn ($_value, $key) => in_array(strtolower((string) $key), $blocked, true))
             ->map(function ($value) {
                 if (is_string($value)) return $this->shortText($value, 200);
                 if (is_array($value)) return $this->safeMetadata($value);
