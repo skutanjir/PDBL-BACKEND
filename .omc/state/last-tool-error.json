@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"php -l /home/fajar/Music/PDBL2/PBDL/backend/app/AI/Services/AiTaskManagerService.php\",\"description\":\"PHP syntax check\"}",
-  "error": "Exit code 255\nPHP Parse error:  syntax error, unexpected token \"{\", expecting \")\" in /home/fajar/Music/PDBL2/PBDL/backend/app/AI/Services/AiTaskManagerService.php on line 528\nErrors parsing /home/fajar/Music/PDBL2/PBDL/backend/app/AI/Services/AiTaskManagerService.php",
-  "timestamp": "2026-06-01T13:02:56.996Z",
-  "retry_count": 1
-}
